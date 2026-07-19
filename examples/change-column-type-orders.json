@@ -1,0 +1,10 @@
+{
+  "asset_urn": "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.orders,PROD)",
+  "change_type": "CHANGE_COLUMN_TYPE",
+  "column_name": "order_total",
+  "new_value": "DECIMAL(18,2)",
+  "type_change_compatible": true,
+  "reason": "The monetary amount requires a governed fixed-precision representation.",
+  "environment": "DEMO",
+  "lineage_depth": 3
+}

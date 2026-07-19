@@ -1,0 +1,9 @@
+{
+  "asset_urn": "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.orders,PROD)",
+  "change_type": "RENAME_COLUMN",
+  "column_name": "order_status",
+  "new_value": "fulfillment_status",
+  "reason": "The renamed field aligns the contract with the governed fulfillment domain.",
+  "environment": "DEMO",
+  "lineage_depth": 3
+}

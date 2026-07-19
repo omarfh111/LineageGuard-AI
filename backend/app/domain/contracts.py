@@ -128,3 +128,50 @@ class ImpactReport(BaseModel):
     missing_metadata: list[str]
     risk_assessment: RiskAssessment
     confidence: float = Field(ge=0, le=1)
+
+
+class PlanStep(BaseModel):
+    """One proposed migration action; it is never executed by LineageGuard."""
+
+    order: int = Field(ge=1)
+    action: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+    affected_asset_urns: list[str]
+
+
+class RecommendedTest(BaseModel):
+    name: str
+    category: str
+    purpose: str
+    affected_asset_urns: list[str]
+
+
+class BusinessRollbackPlan(BaseModel):
+    """A proposed business rollback, explicitly not an executable operation."""
+
+    trigger_conditions: list[str]
+    preservation_steps: list[str]
+    reversal_steps: list[str]
+    dependency_restore_steps: list[str]
+    post_rollback_tests: list[RecommendedTest]
+    responsible_owner_urns: list[str]
+    success_criteria: list[str]
+    execution_status: str = "NOT_EXECUTED"
+
+
+class RemediationPlan(BaseModel):
+    """Deterministic migration guidance derived from an evidence-backed report."""
+
+    source_asset_urn: str
+    change_type: ChangeType
+    migration_steps: list[PlanStep]
+    backward_compatible: bool
+    forward_compatible: bool
+    deprecation_period: str | None
+    recommended_tests: list[RecommendedTest]
+    downstream_checks: list[str]
+    owners_to_notify: list[str]
+    deployment_conditions: list[str]
+    stop_conditions: list[str]
+    rollback_plan: BusinessRollbackPlan
+    execution_status: str = "NOT_EXECUTED"

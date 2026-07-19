@@ -10,6 +10,8 @@ The read-only DataHub vertical slice is now available: local DataHub Core, `show
 
 The deterministic impact-analysis slice is also available: validated change requests, evidence bundles, downstream blast radius, and a reproducible risk score. It remains read-only and does not use an LLM.
 
+The remediation slice produces deterministic migration and business-rollback guidance only. It executes neither SQL/dbt nor DataHub mutations.
+
 **Phase 0 — Bootstrap and compliance** is complete in this repository. The starter includes a runnable FastAPI service, a React/Vite health page, configuration templates, container definitions, and minimal CI.
 
 The following are intentionally **not** implemented yet:
@@ -101,6 +103,7 @@ The backend health check is served on port `8000`; the frontend health page is s
 
 For local DataHub setup and end-to-end verification, see [the local DataHub guide](docs/datahub-local.md).
 See [the impact-analysis guide](docs/impact-analysis.md) for the schema-change endpoint and its sample request.
+See [the remediation and rollback guide](docs/remediation-and-rollback.md) for the planning endpoint and reproducible scenarios.
 
 ## Safety baseline
 

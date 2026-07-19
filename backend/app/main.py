@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.analysis import router as analysis_router
 from app.api.v1.datahub import router as datahub_router
 from app.api.v1.health import router as health_router
+from app.api.v1.remediation import router as remediation_router
 
 app = FastAPI(
     title="LineageGuard AI API",
@@ -27,3 +28,4 @@ app.add_middleware(
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(datahub_router, prefix="/api/v1")
 app.include_router(analysis_router, prefix="/api/v1")
+app.include_router(remediation_router, prefix="/api/v1")
