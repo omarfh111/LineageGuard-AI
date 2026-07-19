@@ -1,0 +1,29 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+coverage.xml
+.venv/
+venv/
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+backend/.bootstrap-deps/
+backend/.tmp-bootstrap/
+
+# JavaScript
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
