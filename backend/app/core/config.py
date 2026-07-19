@@ -16,6 +16,8 @@ class Settings:
 
     app_env: str
     database_url: str
+    datahub_gms_url: str
+    datahub_gms_token: str | None
 
 
 def get_settings() -> Settings:
@@ -24,4 +26,6 @@ def get_settings() -> Settings:
     return Settings(
         app_env=os.getenv("APP_ENV", "development"),
         database_url=os.getenv("DATABASE_URL", "sqlite:///./lineageguard.db"),
+        datahub_gms_url=os.getenv("DATAHUB_GMS_URL", "").rstrip("/"),
+        datahub_gms_token=os.getenv("DATAHUB_GMS_TOKEN") or None,
     )

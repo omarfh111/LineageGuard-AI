@@ -5,6 +5,11 @@ services:
     environment:
       APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: ${DATABASE_URL:-sqlite:///./lineageguard.db}
+      DATAHUB_GMS_URL: ${DATAHUB_GMS_URL:-http://host.docker.internal:8080}
+      DATAHUB_GMS_TOKEN: ${DATAHUB_GMS_TOKEN:-}
+      DATAHUB_MUTATIONS_ENABLED: "false"
+      TOOLS_IS_MUTATION_ENABLED: "false"
+      DATAHUB_MCP_DOCUMENT_TOOLS_DISABLED: "true"
     ports:
       - "8000:8000"
     healthcheck:

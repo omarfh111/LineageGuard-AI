@@ -6,11 +6,12 @@ LineageGuard AI will use the DataHub metadata graph to identify the downstream i
 
 ## Current status
 
+The read-only DataHub vertical slice is now available: local DataHub Core, `showcase-ecommerce` sample metadata, and MCP-backed search, schema, and lineage endpoints.
+
 **Phase 0 — Bootstrap and compliance** is complete in this repository. The starter includes a runnable FastAPI service, a React/Vite health page, configuration templates, container definitions, and minimal CI.
 
 The following are intentionally **not** implemented yet:
 
-- DataHub or MCP connectivity;
 - autonomous agents, orchestration, or workflow persistence;
 - OpenAI, Groq, or any other LLM integration;
 - metadata mutations or write-back.
@@ -21,13 +22,14 @@ The following are intentionally **not** implemented yet:
 React health UI  →  FastAPI API  →  future deterministic workflow
 ```
 
-Later phases will add DataHub read-only access first, followed by validated contracts, deterministic risk analysis, planning, independent judges, human approval, and only then controlled write-back.
+The DataHub vertical slice is read-only and invokes the official self-hosted MCP server for search, schema inspection, and lineage traversal. See [the local DataHub guide](docs/datahub-local.md) for setup. Later work will add validated contracts, deterministic risk analysis, planning, independent judges, human approval, and only then controlled write-back.
 
 ## Repository layout
 
 ```text
 backend/        FastAPI service and API tests
 frontend/       React/Vite health page
+scripts/        Local DataHub bootstrap helper
 docs/           Bootstrap and architecture notes
 evals/          Reserved for future evaluation assets
 examples/       Reserved for reproducible scenarios
@@ -95,11 +97,14 @@ docker compose up --build
 
 The backend health check is served on port `8000`; the frontend health page is served on port `5173`.
 
+For local DataHub setup and end-to-end verification, see [the local DataHub guide](docs/datahub-local.md).
+
 ## Safety baseline
 
 - Secrets are read from the environment and must never be committed.
 - DataHub metadata will be treated as untrusted data, never as instructions.
 - Future analysis components will be read-only by default.
+- The DataHub MCP bridge allowlists six read tools and starts with mutation tools disabled.
 - Any future metadata mutation will require explicit human approval and a pre-mutation snapshot.
 
 ## License
