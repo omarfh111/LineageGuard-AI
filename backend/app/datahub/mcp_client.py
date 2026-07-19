@@ -96,6 +96,22 @@ class DataHubMcpClient:
             },
         )
 
+    async def save_document(self, title: str, content: str, related_asset: str, urn: str | None = None) -> dict[str, Any]:
+        """The sole write-back tool, intended only for an approved report document."""
+        if not self._settings.datahub_writeback_enabled:
+            raise DataHubConfigurationError("DATAHUB_WRITEBACK_ENABLED is false")
+        environment = self._server_environment()
+        environment.update({"DATAHUB_MUTATIONS_ENABLED": "true", "TOOLS_IS_MUTATION_ENABLED": "true", "DATAHUB_MCP_DOCUMENT_TOOLS_DISABLED": "false"})
+        parameters = StdioServerParameters(command="mcp-server-datahub", env=environment)
+        arguments: dict[str, Any] = {"document_type": "Analysis", "title": title, "content": content, "related_assets": [related_asset]}
+        if urn:
+            arguments["urn"] = urn
+        async with stdio_client(parameters) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                result = await session.call_tool("save_document", arguments)
+                return result.model_dump(mode="json")
+
 
 def get_datahub_client() -> DataHubMcpClient:
     """FastAPI dependency factory for the read-only MCP client."""

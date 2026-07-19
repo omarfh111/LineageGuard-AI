@@ -227,6 +227,7 @@ def _calculate_risk(
             f"Blast radius is {len(impacts)} downstream assets ({blast_radius}/100).",
             f"{len(platforms)} downstream platform(s) were observed ({cross_platform}/100).",
             f"Metadata uncertainty is {uncertainty}/100 from missing owners or platforms.",
+            "Weighted score = 30% change severity + 30% blast radius + 20% asset criticality + 10% cross-platform impact + 10% metadata uncertainty.",
         ],
     )
 

@@ -4,14 +4,28 @@ services:
       context: ./backend
     environment:
       APP_ENV: ${APP_ENV:-development}
-      DATABASE_URL: ${DATABASE_URL:-sqlite:///./lineageguard.db}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/lineageguard.db}
       DATAHUB_GMS_URL: ${DATAHUB_GMS_URL:-http://host.docker.internal:8080}
       DATAHUB_GMS_TOKEN: ${DATAHUB_GMS_TOKEN:-}
       DATAHUB_MUTATIONS_ENABLED: "false"
       TOOLS_IS_MUTATION_ENABLED: "false"
       DATAHUB_MCP_DOCUMENT_TOOLS_DISABLED: "true"
+      DATAHUB_WRITEBACK_ENABLED: ${DATAHUB_WRITEBACK_ENABLED:-false}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_JUDGE_MODEL: ${OPENAI_JUDGE_MODEL:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_JUDGE_MODEL: ${GROQ_JUDGE_MODEL:-}
+      JUDGE_TEMPERATURE: ${JUDGE_TEMPERATURE:-0}
+      JUDGE_TIMEOUT_SECONDS: ${JUDGE_TIMEOUT_SECONDS:-30}
+      JUDGE_MAX_RETRIES: ${JUDGE_MAX_RETRIES:-1}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      NVIDIA_CRITIC_MODEL: ${NVIDIA_CRITIC_MODEL:-}
+      NVIDIA_TIMEOUT_SECONDS: ${NVIDIA_TIMEOUT_SECONDS:-90}
     ports:
       - "8000:8000"
+    volumes:
+      - lineageguard-backend-data:/app/data
     healthcheck:
       test:
         - CMD
@@ -39,3 +53,6 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
+
+volumes:
+  lineageguard-backend-data:

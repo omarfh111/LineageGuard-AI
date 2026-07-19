@@ -112,7 +112,10 @@ def _consumer_migration_action(
     change_type: ChangeType, column_name: str | None, new_value: str | None
 ) -> str:
     if change_type is ChangeType.ADD_COLUMN:
-        return f"Update consumers to tolerate the new column {column_name or '(name pending)'}."
+        return (
+            f"Verify whether consumers ignore or tolerate the proposed new column "
+            f"{column_name or '(name pending)'} before any external schema change."
+        )
     if change_type is ChangeType.RENAME_COLUMN:
         return f"Migrate consumers from {column_name} to {new_value} while retaining a compatibility alias."
     if change_type is ChangeType.CHANGE_COLUMN_TYPE:
@@ -120,11 +123,13 @@ def _consumer_migration_action(
     return f"Remove consumer references to {column_name} before proposing its removal."
 
 
-def _compatibility(change_type: ChangeType) -> tuple[bool, bool]:
+def _compatibility(change_type: ChangeType) -> tuple[bool | None, bool | None]:
+    """Do not claim compatibility without a consumer contract and column-type proof."""
+
     if change_type is ChangeType.ADD_COLUMN:
-        return True, True
+        return None, None
     if change_type is ChangeType.RENAME_COLUMN:
-        return True, True
+        return None, None
     if change_type is ChangeType.CHANGE_COLUMN_TYPE:
         return False, False
     return False, False
@@ -163,7 +168,10 @@ def _recommended_tests(
 
 def _rollback_steps(change_type: ChangeType, column_name: str | None) -> list[str]:
     if change_type is ChangeType.ADD_COLUMN:
-        return [f"Stop exposing the added column {column_name or '(name pending)'} to consumers."]
+        return [
+            "Use an owner-approved external migration to stop exposing the added column "
+            f"{column_name or '(name pending)'}, only after consumer contracts are preserved."
+        ]
     if change_type is ChangeType.RENAME_COLUMN:
         return ["Restore the previous column name or compatibility alias."]
     if change_type is ChangeType.CHANGE_COLUMN_TYPE:

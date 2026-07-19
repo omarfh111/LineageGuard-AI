@@ -95,7 +95,7 @@ class ImpactItem(BaseModel):
 
     asset_urn: str
     asset_type: str
-    impact_type: str = "SCHEMA_BREAK"
+    impact_type: str = "POTENTIAL_SCHEMA_IMPACT"
     lineage_path: list[str]
     owner_urns: list[str]
     platform_urn: str | None = None
@@ -165,8 +165,8 @@ class RemediationPlan(BaseModel):
     source_asset_urn: str
     change_type: ChangeType
     migration_steps: list[PlanStep]
-    backward_compatible: bool
-    forward_compatible: bool
+    backward_compatible: bool | None
+    forward_compatible: bool | None
     deprecation_period: str | None
     recommended_tests: list[RecommendedTest]
     downstream_checks: list[str]
@@ -175,3 +175,160 @@ class RemediationPlan(BaseModel):
     stop_conditions: list[str]
     rollback_plan: BusinessRollbackPlan
     execution_status: str = "NOT_EXECUTED"
+
+
+class JudgeProvider(StrEnum):
+    OPENAI = "openai"
+    GROQ = "groq"
+
+
+class JudgeStatus(StrEnum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    ERROR = "ERROR"
+    TIMEOUT = "TIMEOUT"
+
+
+class JudgeScores(BaseModel):
+    grounding: int = Field(ge=0, le=5)
+    technical_correctness: int = Field(ge=0, le=5)
+    completeness: int = Field(ge=0, le=5)
+    safety: int = Field(ge=0, le=5)
+    actionability: int = Field(ge=0, le=5)
+
+
+class JudgeVerdict(BaseModel):
+    """Structured result from one independent LLM judge."""
+
+    judge_provider: JudgeProvider
+    judge_model: str
+    verdict: JudgeStatus
+    scores: JudgeScores
+    critical_errors: list[str]
+    non_critical_issues: list[str]
+    repair_instructions: list[str]
+    audit_rationale: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1)
+
+
+class DeterministicValidation(BaseModel):
+    passed: bool
+    errors: list[str]
+
+
+class AggregateDecision(StrEnum):
+    FINALIZE_READ_ONLY = "FINALIZE_READ_ONLY"
+    NEEDS_REPAIR = "NEEDS_REPAIR"
+    AWAITING_HUMAN = "AWAITING_HUMAN"
+    BLOCKED = "BLOCKED"
+
+
+class JudgeAggregation(BaseModel):
+    decision: AggregateDecision
+    human_review_required: bool
+    rationale: str
+
+
+class JudgingRequest(BaseModel):
+    impact_report: ImpactReport
+    remediation_plan: RemediationPlan
+    repair_cycles: int = Field(default=0, ge=0, le=2)
+
+
+class CritiqueSeverity(StrEnum):
+    CRITICAL = "CRITICAL"
+    MAJOR = "MAJOR"
+    MINOR = "MINOR"
+
+
+class CritiqueIssue(BaseModel):
+    severity: CritiqueSeverity
+    finding: str = Field(min_length=1, max_length=1000)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class AdvisoryCritique(BaseModel):
+    """Advisory review performed before the independent final judges."""
+
+    provider: str
+    model: str
+    summary: str = Field(min_length=1, max_length=2000)
+    issues: list[CritiqueIssue]
+    recommended_revisions: list[str]
+    confidence: float = Field(ge=0, le=1)
+
+
+class CritiqueRequest(BaseModel):
+    impact_report: ImpactReport
+    remediation_plan: RemediationPlan
+
+
+class JudgingResult(BaseModel):
+    deterministic_validation: DeterministicValidation
+    openai_verdict: JudgeVerdict | None
+    groq_verdict: JudgeVerdict | None
+    aggregate_decision: JudgeAggregation | None
+
+
+class HumanDecision(StrEnum):
+    APPROVE_REPORT = "APPROVE_REPORT"
+    REQUEST_REVISION = "REQUEST_REVISION"
+    REJECT = "REJECT"
+    APPROVE_ROLLBACK = "APPROVE_ROLLBACK"
+
+
+class WritebackStatus(StrEnum):
+    PENDING_APPROVAL = "PENDING_APPROVAL"
+    APPROVED = "APPROVED"
+    WRITEBACK_PENDING = "WRITEBACK_PENDING"
+    COMPLETED = "COMPLETED"
+    REJECTED = "REJECTED"
+    ROLLBACK_PENDING = "ROLLBACK_PENDING"
+    ROLLED_BACK = "ROLLED_BACK"
+    FAILED = "FAILED"
+
+
+class WritebackProposal(BaseModel):
+    run_id: str
+    idempotency_key: str = Field(min_length=8, max_length=200)
+    report_hash: str
+    target_asset_urn: str
+    document_title: str
+    document_content: str
+    allowed_mutations: list[str] = Field(default_factory=lambda: ["save_document"])
+    snapshot: dict[str, Any]
+    status: WritebackStatus = WritebackStatus.PENDING_APPROVAL
+
+
+class ApprovalRequest(BaseModel):
+    decision: HumanDecision
+    comment: str = Field(min_length=1, max_length=1000)
+    idempotency_key: str = Field(min_length=8, max_length=200)
+
+
+class AuditEvent(BaseModel):
+    run_id: str
+    event_type: str
+    timestamp: datetime
+    detail: dict[str, Any]
+
+
+class WritebackPreparationRequest(BaseModel):
+    judging_request: JudgingRequest
+    judging_result: JudgingResult
+    idempotency_key: str = Field(min_length=8, max_length=200)
+
+
+class StoredJudgingResult(BaseModel):
+    run_id: str
+    result: JudgingResult
+
+
+class JudgingRunSummary(BaseModel):
+    """Safe, compact history view; full requests remain server-owned."""
+
+    run_id: str
+    created_at: datetime
+    decision: AggregateDecision | None
+    openai_status: JudgeStatus | None
+    groq_status: JudgeStatus | None

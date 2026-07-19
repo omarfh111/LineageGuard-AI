@@ -84,20 +84,20 @@ def test_drop_column_plan_never_executes_a_destructive_change() -> None:
     assert any("human approval" in step.action.lower() for step in plan.migration_steps)
 
 
-def test_rename_plan_keeps_a_compatibility_path() -> None:
+def test_rename_plan_requires_contract_evidence_before_claiming_compatibility() -> None:
     plan = DeterministicRemediationPlanner().plan(impact_report("RENAME_COLUMN"))
 
-    assert plan.backward_compatible is True
-    assert plan.forward_compatible is True
+    assert plan.backward_compatible is None
+    assert plan.forward_compatible is None
     assert "compatibility alias" in plan.migration_steps[1].action
 
 
-def test_add_column_plan_is_backward_and_forward_compatible() -> None:
+def test_add_column_plan_requires_contract_evidence_before_claiming_compatibility() -> None:
     plan = DeterministicRemediationPlanner().plan(
         impact_report("ADD_COLUMN", column_name="fulfillment_status", column_nullable=True)
     )
 
-    assert (plan.backward_compatible, plan.forward_compatible) == (True, True)
+    assert (plan.backward_compatible, plan.forward_compatible) == (None, None)
 
 
 def test_remediation_endpoint_returns_a_non_executing_plan() -> None:
