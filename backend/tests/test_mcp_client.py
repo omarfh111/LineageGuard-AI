@@ -87,5 +87,6 @@ async def test_client_maps_downstream_lineage_to_the_mcp_upstream_flag() -> None
             "urn": "urn:li:dataset:orders",
             "upstream": False,
             "max_hops": 3,
+            "max_results": 100,
         },
     }

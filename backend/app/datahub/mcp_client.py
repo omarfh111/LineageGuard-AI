@@ -82,7 +82,7 @@ class DataHubMcpClient:
         return await self.call_tool("list_schema_fields", {"urn": urn})
 
     async def get_lineage(
-        self, urn: str, direction: str, max_hops: int
+        self, urn: str, direction: str, max_hops: int, max_results: int = 100
     ) -> dict[str, Any]:
         """Map the API direction to the MCP server's ``upstream`` flag."""
 
@@ -92,6 +92,7 @@ class DataHubMcpClient:
                 "urn": urn,
                 "upstream": direction == "UPSTREAM",
                 "max_hops": max_hops,
+                "max_results": max_results,
             },
         )
 

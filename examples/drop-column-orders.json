@@ -1,0 +1,8 @@
+{
+  "asset_urn": "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.orders,PROD)",
+  "change_type": "DROP_COLUMN",
+  "column_name": "order_status",
+  "reason": "The status is replaced by the governed fulfillment status field.",
+  "environment": "DEMO",
+  "lineage_depth": 3
+}

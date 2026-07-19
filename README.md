@@ -8,6 +8,8 @@ LineageGuard AI will use the DataHub metadata graph to identify the downstream i
 
 The read-only DataHub vertical slice is now available: local DataHub Core, `showcase-ecommerce` sample metadata, and MCP-backed search, schema, and lineage endpoints.
 
+The deterministic impact-analysis slice is also available: validated change requests, evidence bundles, downstream blast radius, and a reproducible risk score. It remains read-only and does not use an LLM.
+
 **Phase 0 — Bootstrap and compliance** is complete in this repository. The starter includes a runnable FastAPI service, a React/Vite health page, configuration templates, container definitions, and minimal CI.
 
 The following are intentionally **not** implemented yet:
@@ -98,6 +100,7 @@ docker compose up --build
 The backend health check is served on port `8000`; the frontend health page is served on port `5173`.
 
 For local DataHub setup and end-to-end verification, see [the local DataHub guide](docs/datahub-local.md).
+See [the impact-analysis guide](docs/impact-analysis.md) for the schema-change endpoint and its sample request.
 
 ## Safety baseline
 
