@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from app.datahub.mcp_client import get_datahub_client
+from app.datahub.mcp_client import DataHubConfigurationError, get_datahub_client
 from app.main import app
 
 
@@ -46,3 +46,18 @@ def test_lineage_caps_hops_and_returns_read_result() -> None:
         "direction": "DOWNSTREAM",
         "max_hops": 3,
     }
+
+
+class UnavailableDataHubMcpClient:
+    async def search(self, query: str) -> dict:
+        raise DataHubConfigurationError("DataHub MCP is unavailable")
+
+
+def test_datahub_unavailability_is_reported_as_service_unavailable() -> None:
+    app.dependency_overrides[get_datahub_client] = lambda: UnavailableDataHubMcpClient()
+    try:
+        response = TestClient(app).get("/api/v1/datahub/search", params={"query": "orders"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 503

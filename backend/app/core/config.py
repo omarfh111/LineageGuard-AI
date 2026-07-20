@@ -30,6 +30,8 @@ class Settings:
     nvidia_critic_model: str | None = None
     nvidia_timeout_seconds: int = 90
     datahub_writeback_enabled: bool = False
+    langsmith_tracing_enabled: bool = False
+    langsmith_project: str | None = None
 
 
 def get_settings() -> Settings:
@@ -54,4 +56,38 @@ def get_settings() -> Settings:
         nvidia_critic_model=os.getenv("NVIDIA_CRITIC_MODEL") or None,
         nvidia_timeout_seconds=int(os.getenv("NVIDIA_TIMEOUT_SECONDS", "90")),
         datahub_writeback_enabled=os.getenv("DATAHUB_WRITEBACK_ENABLED", "false").lower() == "true",
+        langsmith_tracing_enabled=(
+            _enabled(os.getenv("LANGSMITH_TRACING") or os.getenv("LANGCHAIN_TRACING_V2", "false"))
+            and bool(os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY"))
+        ),
+        langsmith_project=os.getenv("LANGSMITH_PROJECT") or os.getenv("LANGCHAIN_PROJECT") or None,
     )
+
+
+def configure_langsmith_tracing() -> bool:
+    """Normalize legacy LangChain variables for LangGraph/LangSmith tracing.
+
+    Values are read only from the process environment and are never logged or
+    returned by the API. Tracing stays disabled unless the user opts in with a
+    tracing flag; a missing key simply leaves tracing disabled.
+    """
+
+    enabled = _enabled(os.getenv("LANGSMITH_TRACING") or os.getenv("LANGCHAIN_TRACING_V2", "false"))
+    api_key = os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY")
+    if not enabled or not api_key:
+        return False
+
+    os.environ["LANGSMITH_TRACING"] = "true"
+    os.environ.setdefault("LANGSMITH_API_KEY", api_key)
+    _copy_if_present("LANGSMITH_PROJECT", "LANGCHAIN_PROJECT")
+    _copy_if_present("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
+    return True
+
+
+def _copy_if_present(target: str, legacy_source: str) -> None:
+    if not os.getenv(target) and os.getenv(legacy_source):
+        os.environ[target] = os.environ[legacy_source]
+
+
+def _enabled(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}

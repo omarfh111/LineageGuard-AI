@@ -69,14 +69,26 @@ class DataHubMcpClient:
             command="mcp-server-datahub",
             env=self._server_environment(),
         )
-        async with stdio_client(parameters) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                result = await session.call_tool(tool_name, dict(arguments))
-                return result.model_dump(mode="json")
+        try:
+            async with stdio_client(parameters) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    result = await session.call_tool(tool_name, dict(arguments))
+                    return result.model_dump(mode="json")
+        except (OSError, BaseExceptionGroup) as error:
+            raise DataHubConfigurationError(
+                "DataHub MCP is unavailable; verify that local GMS is running and reachable"
+            ) from error
 
-    async def search(self, query: str) -> dict[str, Any]:
-        return await self.call_tool("search", {"query": query})
+    async def search(
+        self, query: str, num_results: int = 10, offset: int = 0
+    ) -> dict[str, Any]:
+        """Run a paginated read-only catalog search (MCP maximum is 50/page)."""
+
+        return await self.call_tool(
+            "search",
+            {"query": query, "num_results": min(50, max(1, num_results)), "offset": max(0, offset)},
+        )
 
     async def list_schema_fields(self, urn: str) -> dict[str, Any]:
         return await self.call_tool("list_schema_fields", {"urn": urn})

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 
 from app.datahub.mcp_client import DataHubMcpClient
@@ -19,6 +18,11 @@ from app.domain.contracts import (
     RiskComponents,
     RiskLevel,
 )
+from app.services.metadata_investigator import (
+    MetadataInvestigation,
+    MetadataInvestigationError,
+    MetadataInvestigator,
+)
 
 
 class AnalysisInputError(ValueError):
@@ -31,10 +35,16 @@ class ImpactAnalysisService:
     def __init__(self, client: DataHubMcpClient) -> None:
         self._client = client
 
-    async def analyze(self, request: ChangeRequest) -> ImpactReport:
-        retrieved_at = datetime.now(UTC)
-        schema_result = await self._client.list_schema_fields(request.asset_urn)
-        schema = _structured_content(schema_result)
+    async def analyze(
+        self, request: ChangeRequest, investigation: MetadataInvestigation | None = None
+    ) -> ImpactReport:
+        try:
+            investigation = investigation or await MetadataInvestigator(self._client).investigate(request)
+        except MetadataInvestigationError as error:
+            raise AnalysisInputError(str(error)) from error
+
+        retrieved_at = investigation.retrieved_at
+        schema = investigation.schema
         fields = schema.get("fields", [])
         if not isinstance(fields, list):
             raise AnalysisInputError("DataHub returned an invalid schema response")
@@ -50,10 +60,7 @@ class ImpactAnalysisService:
                 f"Column {request.column_name!r} does not exist in the retrieved schema"
             )
 
-        lineage_result = await self._client.get_lineage(
-            request.asset_urn, "DOWNSTREAM", request.lineage_depth
-        )
-        lineage = _structured_content(lineage_result)
+        lineage = investigation.lineage
         downstream = lineage.get("downstreams", {})
         search_results = downstream.get("searchResults", []) if isinstance(downstream, dict) else []
         if not isinstance(search_results, list):
@@ -141,11 +148,6 @@ class ImpactAnalysisService:
             risk_assessment=risk_assessment,
             confidence=confidence,
         )
-
-
-def _structured_content(result: dict[str, Any]) -> dict[str, Any]:
-    content = result.get("structuredContent", {})
-    return content if isinstance(content, dict) else {}
 
 
 def _owner_urns(entity: dict[str, Any]) -> list[str]:

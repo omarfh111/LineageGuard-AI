@@ -1,28 +1,27 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, Fragment, lazy, Suspense, useEffect, useMemo, useState } from "react";
 import "./styles.css";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const demoAsset = "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.orders,PROD)";
+const ForceGraph3D = lazy(() => import("react-force-graph-3d"));
 
-type Health = { status: string; environment: string };
 type ChangeType = "ADD_COLUMN" | "RENAME_COLUMN" | "CHANGE_COLUMN_TYPE" | "DROP_COLUMN";
 type ApiError = { detail?: string };
+type Health = { status: string; environment: string };
 type ImpactReport = Record<string, any>;
 type RemediationPlan = Record<string, any>;
 type Critique = { model: string; summary: string; confidence: number; issues: Array<{ severity: string; finding: string; evidence_ids: string[] }>; recommended_revisions: string[] };
-type Verdict = { judge_provider: string; judge_model: string; verdict: string; confidence: number; scores: Record<string, number>; critical_errors: string[]; non_critical_issues: string[]; repair_instructions: string[]; audit_rationale: string[] };
+type Verdict = { judge_provider: string; judge_model: string; verdict: string; confidence: number; scores: Record<string, number>; critical_errors: string[]; repair_instructions: string[]; audit_rationale: string[] };
 type StoredJudging = { run_id: string; result: { deterministic_validation: { passed: boolean; errors: string[] }; openai_verdict: Verdict | null; groq_verdict: Verdict | null; aggregate_decision: { decision: string; human_review_required: boolean; rationale: string } | null } };
-type Proposal = { run_id: string; status: string; target_asset_urn: string; document_title: string; document_content: string; allowed_mutations: string[]; snapshot: Record<string, unknown>; idempotency_key: string };
-type RunSummary = { run_id: string; created_at: string; decision: string | null; openai_status: string | null; groq_status: string | null };
-
-const steps = ["Demande", "Impact", "Plan", "Critique locale", "Revue indépendante", "Validation humaine"];
+type Proposal = { run_id: string; status: string; target_asset_urn: string; document_content: string; allowed_mutations: string[]; snapshot: Record<string, unknown>; idempotency_key: string };
+type RunSummary = { run_id: string; decision: string | null; openai_status: string | null; groq_status: string | null };
+type WorkflowGraph = { nodes: Array<{ id: string; label: string; kind: string; status: string; description: string }>; edges: Array<{ source: string; target: string; label?: string | null }>; tracing_enabled: boolean; tracing_project?: string | null };
+type CatalogNode = { urn: string; label: string; entity_type: string; platform_urn?: string | null; owner_urns: string[]; degree?: number | null };
+type CatalogEdge = { source_urn: string; target_urn: string; direction: string; hops: number };
+type CatalogGraph = { nodes: CatalogNode[]; edges: CatalogEdge[]; truncated: boolean };
 
 async function request<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    method: body ? "POST" : "GET",
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const response = await fetch(`${apiBaseUrl}${path}`, { method: body ? "POST" : "GET", headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });
   if (!response.ok) {
     const error = await response.json().catch(() => ({})) as ApiError;
     throw new Error(error.detail ?? `Erreur API (${response.status})`);
@@ -31,8 +30,8 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
 }
 
 function statusTone(value?: string) {
-  if (value === "PASS" || value === "FINALIZE_READ_ONLY" || value === "COMPLETED") return "good";
-  if (value === "FAIL" || value === "BLOCKED" || value === "REJECTED" || value === "FAILED") return "bad";
+  if (["PASS", "FINALIZE_READ_ONLY", "COMPLETED"].includes(value ?? "")) return "good";
+  if (["FAIL", "BLOCKED", "REJECTED", "FAILED"].includes(value ?? "")) return "bad";
   return "warn";
 }
 
@@ -49,134 +48,158 @@ export default function App() {
   const [critique, setCritique] = useState<Critique | null>(null);
   const [judging, setJudging] = useState<StoredJudging | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
-  const [history, setHistory] = useState<string[]>([]);
-  const [persistedHistory, setPersistedHistory] = useState<RunSummary[]>([]);
+  const [history, setHistory] = useState<RunSummary[]>([]);
+  const [workflowGraph, setWorkflowGraph] = useState<WorkflowGraph | null>(null);
+  const [catalogQuery, setCatalogQuery] = useState("");
+  const [catalogGraph, setCatalogGraph] = useState<CatalogGraph | null>(null);
+  const [catalogOffset, setCatalogOffset] = useState(0);
+  const [catalogHasMore, setCatalogHasMore] = useState(false);
+  const [selectedCatalogNode, setSelectedCatalogNode] = useState<CatalogNode | null>(null);
+  const [catalogTypeFilter, setCatalogTypeFilter] = useState("ALL");
+  const [catalogPlatformFilter, setCatalogPlatformFilter] = useState("ALL");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     request<Health>("/api/v1/health").then(setHealth).catch(() => setHealth(null));
-    request<RunSummary[]>("/api/v1/judges/history").then(setPersistedHistory).catch(() => setPersistedHistory([]));
+    request<RunSummary[]>("/api/v1/judges/history").then(setHistory).catch(() => setHistory([]));
+    request<WorkflowGraph>("/api/v1/workflows/graph").then(setWorkflowGraph).catch(() => setWorkflowGraph(null));
   }, []);
 
-  async function refreshPersistedHistory() {
-    try { setPersistedHistory(await request<RunSummary[]>("/api/v1/judges/history")); } catch { /* History is non-critical to the workflow. */ }
-  }
-
-  const activeStep = proposal ? 5 : judging ? 4 : critique ? 3 : plan ? 2 : impact ? 1 : 0;
   const changeNeedsValue = changeType === "RENAME_COLUMN" || changeType === "CHANGE_COLUMN_TYPE";
-  const requestPayload = useMemo(() => ({
-    asset_urn: assetUrn.trim(), change_type: changeType, column_name: changeType === "ADD_COLUMN" ? columnName.trim() || undefined : columnName.trim(),
-    new_value: changeNeedsValue ? newValue.trim() : undefined,
-    reason: reason.trim(), environment: "PRODUCTION", lineage_depth: depth,
-    column_nullable: changeType === "ADD_COLUMN" ? true : undefined,
-    type_change_compatible: changeType === "CHANGE_COLUMN_TYPE" ? false : undefined,
-  }), [assetUrn, changeType, columnName, newValue, reason, depth, changeNeedsValue]);
+  const payload = useMemo(() => ({ asset_urn: assetUrn.trim(), change_type: changeType, column_name: columnName.trim() || undefined, new_value: changeNeedsValue ? newValue.trim() : undefined, reason: reason.trim(), environment: "PRODUCTION", lineage_depth: depth, column_nullable: changeType === "ADD_COLUMN" ? true : undefined, type_change_compatible: changeType === "CHANGE_COLUMN_TYPE" ? false : undefined }), [assetUrn, changeType, columnName, newValue, reason, depth, changeNeedsValue]);
+  const catalogTypes = useMemo(() => [...new Set(catalogGraph?.nodes.map((node) => node.entity_type) ?? [])].sort(), [catalogGraph]);
+  const catalogPlatforms = useMemo(() => [...new Set((catalogGraph?.nodes.map((node) => node.platform_urn).filter(Boolean) ?? []) as string[])].sort(), [catalogGraph]);
+  const visibleCatalogNodes = useMemo(() => (catalogGraph?.nodes ?? []).filter((node) => (catalogTypeFilter === "ALL" || node.entity_type === catalogTypeFilter) && (catalogPlatformFilter === "ALL" || node.platform_urn === catalogPlatformFilter)), [catalogGraph, catalogTypeFilter, catalogPlatformFilter]);
 
-  function resetAfterImpact() { setPlan(null); setCritique(null); setJudging(null); setProposal(null); }
+  function resetAfterImpact() { setCritique(null); setJudging(null); setProposal(null); }
+  function mergeCatalogGraph(next: CatalogGraph) {
+    setCatalogGraph((current) => {
+      if (!current) return next;
+      const nodes = new Map(current.nodes.map((node) => [node.urn, node]));
+      next.nodes.forEach((node) => nodes.set(node.urn, node));
+      const edges = new Map(current.edges.map((edge) => [`${edge.source_urn}:${edge.target_urn}:${edge.direction}`, edge]));
+      next.edges.forEach((edge) => edges.set(`${edge.source_urn}:${edge.target_urn}:${edge.direction}`, edge));
+      return { ...next, nodes: [...nodes.values()], edges: [...edges.values()], truncated: current.truncated || next.truncated };
+    });
+  }
+  async function refreshHistory() { try { setHistory(await request<RunSummary[]>("/api/v1/judges/history")); } catch { /* non-critical */ } }
   async function runImpact(event: FormEvent) {
     event.preventDefault(); setBusy("impact"); setError(null); setNotice(null);
     try {
-      const report = await request<ImpactReport>("/api/v1/analyses/impact", requestPayload);
-      const nextPlan = await request<RemediationPlan>("/api/v1/remediations/plan", report);
-      setImpact(report); setPlan(nextPlan); resetAfterImpact(); setImpact(report); setPlan(nextPlan);
-      setHistory((items) => [`Analyse ${new Date().toLocaleTimeString("fr-FR")} · ${report.risk_assessment.level}`, ...items].slice(0, 8));
+      const execution = await request<{ impact_report: ImpactReport; remediation_plan: RemediationPlan; graph: WorkflowGraph }>("/api/v1/workflows/analyze", payload);
+      resetAfterImpact(); setImpact(execution.impact_report); setPlan(execution.remediation_plan); setWorkflowGraph(execution.graph);
       setNotice("Impact et plan déterministe générés. Aucun LLM ni changement DataHub n’a été déclenché.");
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Analyse impossible"); }
-    finally { setBusy(null); }
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Analyse impossible"); } finally { setBusy(null); }
   }
   async function runCritique() {
-    if (!impact || !plan) return; setBusy("critique"); setError(null); setNotice(null);
-    try {
-      const result = await request<Critique>("/api/v1/debates/critique", { impact_report: impact, remediation_plan: plan });
-      setCritique(result); setHistory((items) => [`Critique NVIDIA · ${result.model}`, ...items].slice(0, 8));
-      setNotice("Critique NVIDIA terminée. Elle est consultative : le plan n’a pas été modifié automatiquement.");
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Critique NVIDIA impossible"); }
-    finally { setBusy(null); }
+    if (!impact || !plan) return; setBusy("critique"); setError(null);
+    try { const result = await request<{ critique: Critique; graph: WorkflowGraph }>("/api/v1/workflows/critique", { impact_report: impact, remediation_plan: plan }); setCritique(result.critique); setWorkflowGraph(result.graph); setNotice("Critique NVIDIA terminée : elle est consultative et ne modifie aucun plan."); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Critique NVIDIA impossible"); } finally { setBusy(null); }
   }
   async function runJudges() {
-    if (!impact || !plan) return; setBusy("judges"); setError(null); setNotice(null);
+    if (!impact || !plan) return; setBusy("judges"); setError(null);
+    try { const result = await request<{ judging: StoredJudging; graph: WorkflowGraph }>("/api/v1/workflows/judge", { impact_report: impact, remediation_plan: plan, repair_cycles: 0 }); setJudging(result.judging); setWorkflowGraph(result.graph); await refreshHistory(); setNotice("Les juges ont été exécutés indépendamment."); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Revue des juges impossible"); } finally { setBusy(null); }
+  }
+  async function searchCatalog(event: FormEvent) {
+    event.preventDefault(); if (!catalogQuery.trim()) return; setBusy("catalog-search"); setError(null);
+    try { const graph = await request<CatalogGraph>(`/api/v1/datahub/catalog/search?query=${encodeURIComponent(catalogQuery.trim())}`); setCatalogGraph(graph); setSelectedCatalogNode(graph.nodes[0] ?? null); setNotice(`${graph.nodes.length} actif(s) chargés depuis DataHub.`); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Recherche catalogue impossible"); } finally { setBusy(null); }
+  }
+  async function expandCatalog(direction: "UPSTREAM" | "DOWNSTREAM") {
+    if (!selectedCatalogNode) return; setBusy(`catalog-${direction}`); setError(null);
+    try { const graph = await request<CatalogGraph>(`/api/v1/datahub/catalog/expand?asset_urn=${encodeURIComponent(selectedCatalogNode.urn)}&direction=${direction}&max_hops=2`); mergeCatalogGraph(graph); setNotice(`Lineage ${direction === "DOWNSTREAM" ? "aval" : "amont"} chargé.`); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Expansion de lineage impossible"); } finally { setBusy(null); }
+  }
+  async function loadCatalogSnapshot() {
+    setBusy("catalog-snapshot"); setError(null);
     try {
-      const result = await request<StoredJudging>("/api/v1/judges/evaluate", { impact_report: impact, remediation_plan: plan, repair_cycles: 0 });
-      setJudging(result); setHistory((items) => [`Revue OpenAI + Groq · ${result.result.aggregate_decision?.decision ?? "GATE0"}`, ...items].slice(0, 8));
-      await refreshPersistedHistory();
-      setNotice("Les juges ont été exécutés indépendamment. Vérifiez leurs verdicts avant toute suite.");
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Revue des juges impossible"); }
-    finally { setBusy(null); }
+      let offset = 0; let hasMore = true; let firstPage = true;
+      const assetUrns = new Set<string>(); const relationKeys = new Set<string>();
+      while (hasMore) {
+        const graph = await request<CatalogGraph>(`/api/v1/datahub/catalog/snapshot?max_assets=50&max_edges=300&offset=${offset}`);
+        graph.nodes.forEach((node) => assetUrns.add(node.urn));
+        graph.edges.forEach((edge) => relationKeys.add(`${edge.source_urn}:${edge.target_urn}:${edge.direction}`));
+        if (firstPage) { setCatalogGraph(graph); setSelectedCatalogNode(graph.nodes[0] ?? null); firstPage = false; }
+        else { mergeCatalogGraph(graph); }
+        offset += 50;
+        hasMore = graph.truncated && graph.nodes.length > 0;
+        setCatalogOffset(offset); setCatalogHasMore(hasMore);
+        setNotice(`Carte 3D : ${assetUrns.size} actifs et ${relationKeys.size} relations chargés${hasMore ? "…" : "."}`);
+      }
+    }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Carte complète impossible"); } finally { setBusy(null); }
+  }
+  async function loadMoreCatalog() {
+    setBusy("catalog-more"); setError(null);
+    try {
+      const graph = await request<CatalogGraph>(`/api/v1/datahub/catalog/snapshot?max_assets=50&max_edges=300&offset=${catalogOffset}`);
+      mergeCatalogGraph(graph); setCatalogOffset((value) => value + 50); setCatalogHasMore(graph.truncated);
+      setNotice(`${graph.nodes.length} actifs supplémentaires intégrés à la carte 3D.`);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Chargement supplémentaire impossible"); } finally { setBusy(null); }
   }
   async function prepareWriteback() {
     if (!judging) return; setBusy("prepare"); setError(null);
-    try {
-      const key = crypto.randomUUID();
-      const result = await request<Proposal>("/api/v1/writebacks/prepare", { run_id: judging.run_id, idempotency_key: key });
-      setProposal(result); setNotice("Proposition enregistrée avec son snapshot. Elle n’est pas encore écrite dans DataHub.");
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Préparation impossible"); }
-    finally { setBusy(null); }
+    try { const result = await request<Proposal>("/api/v1/writebacks/prepare", { run_id: judging.run_id, idempotency_key: crypto.randomUUID() }); setProposal(result); setNotice("Proposition HITL enregistrée, sans écriture DataHub."); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Préparation impossible"); } finally { setBusy(null); }
   }
-  async function humanDecision(decision: "APPROVE_REPORT" | "REQUEST_REVISION" | "REJECT") {
-    if (!proposal) return;
-    if (decision === "APPROVE_REPORT" && !window.confirm("Confirmer la demande d’écriture contrôlée dans DataHub ?")) return;
+  async function decide(decision: "APPROVE_REPORT" | "REQUEST_REVISION" | "REJECT") {
+    if (!proposal || (decision === "APPROVE_REPORT" && !window.confirm("Confirmer la demande d’écriture contrôlée dans DataHub ?"))) return;
     setBusy("approval"); setError(null);
-    try {
-      const result = await request<Proposal>(`/api/v1/writebacks/${proposal.run_id}/approve`, { decision, comment: "Décision prise depuis l’interface LineageGuard.", idempotency_key: proposal.idempotency_key });
-      setProposal(result); setNotice(`Décision enregistrée : ${result.status}.`);
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Décision impossible"); }
-    finally { setBusy(null); }
+    try { const result = await request<Proposal>(`/api/v1/writebacks/${proposal.run_id}/approve`, { decision, comment: "Décision prise depuis l’interface.", idempotency_key: proposal.idempotency_key }); setProposal(result); setNotice(`Décision enregistrée : ${result.status}.`); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Décision impossible"); } finally { setBusy(null); }
   }
 
   return <main className="shell">
-    <header className="topbar">
-      <div><p className="eyebrow">Build with DataHub · Agents That Do Real Work</p><h1>LineageGuard <span>AI</span></h1></div>
-      <div className={`api-state ${health ? "online" : "offline"}`}><i /> API {health ? `${health.status} · ${health.environment}` : "indisponible"}</div>
-    </header>
-
-    <section className="guardrail"><strong>Mode sûr</strong><span>Lecture DataHub, planification déterministe, critique locale puis juges indépendants. L’écriture reste bloquée tant qu’une approbation humaine explicite n’est pas donnée.</span></section>
+    <header className="topbar"><div><p className="eyebrow">Build with DataHub · Agents That Do Real Work</p><h1>LineageGuard <span>AI</span></h1></div><div className={`api-state ${health ? "online" : "offline"}`}><i /> API {health ? `${health.status} · ${health.environment}` : "indisponible"}</div></header>
+    <section className="guardrail"><strong>Mode sûr</strong><span>DataHub reste en lecture seule ; les juges sont manuels et toute écriture exige le HITL.</span></section>
     {error && <div className="banner error">{error}</div>}{notice && <div className="banner notice">{notice}</div>}
-
-    <nav className="steps" aria-label="Progression du workflow">{steps.map((step, index) => <div className={index <= activeStep ? "step active" : "step"} key={step}><b>{index + 1}</b><span>{step}</span></div>)}</nav>
-
-    <div className="layout">
-      <section className="panel request-panel"><div className="panel-heading"><div><p className="kicker">Étape 1</p><h2>Demande de changement</h2></div><span className="readonly">Aucune mutation</span></div>
-        <form onSubmit={runImpact}>
-          <label>Actif DataHub<input value={assetUrn} onChange={(event) => setAssetUrn(event.target.value)} required /></label>
-          <div className="two-col"><label>Type de changement<select value={changeType} onChange={(event) => setChangeType(event.target.value as ChangeType)}><option value="ADD_COLUMN">Ajouter une colonne</option><option value="RENAME_COLUMN">Renommer une colonne</option><option value="CHANGE_COLUMN_TYPE">Changer le type</option><option value="DROP_COLUMN">Supprimer une colonne</option></select></label><label>Profondeur de lineage<select value={depth} onChange={(event) => setDepth(Number(event.target.value))}>{[1,2,3,4,5].map((value) => <option key={value} value={value}>{value} saut{value > 1 ? "s" : ""}</option>)}</select></label></div>
-          <div className="two-col"><label>Colonne{changeType === "ADD_COLUMN" ? " (optionnelle)" : ""}<input value={columnName} onChange={(event) => setColumnName(event.target.value)} required={changeType !== "ADD_COLUMN"} /></label>{changeNeedsValue && <label>{changeType === "RENAME_COLUMN" ? "Nouveau nom" : "Nouveau type"}<input value={newValue} onChange={(event) => setNewValue(event.target.value)} required /></label>}</div>
-          <label>Justification<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={5} /></label>
-          <button className="primary" disabled={busy !== null}>{busy === "impact" ? "Analyse en cours…" : "Analyser l’impact et générer le plan"}</button>
-        </form>
-      </section>
-
-      <aside className="panel workflow"><p className="kicker">Contrôles</p><h2>Workflow gouverné</h2>
-        <div className="control"><span>DataHub MCP</span><b className="chip good">lecture seule</b></div><div className="control"><span>NVIDIA Build</span><b className="chip">consultatif</b></div><div className="control"><span>OpenAI + Groq</span><b className="chip warn">déclenchés manuellement</b></div><div className="control"><span>Write-back</span><b className="chip bad">HITL obligatoire</b></div>
-        <p className="small">Les métadonnées sont traitées comme des données non fiables. Les preuves sont conservées avec chaque analyse.</p>
-      </aside>
-    </div>
-
-    {impact && <section className="panel report"><div className="panel-heading"><div><p className="kicker">Étapes 2–3</p><h2>Rapport d’impact et plan</h2></div><span className={`badge ${statusTone(impact.risk_assessment.level)}`}>{impact.risk_assessment.level} · {impact.risk_assessment.score}/100</span></div>
-      <div className="metrics"><div><b>{impact.blast_radius}</b><span>actifs impactés</span></div><div><b>{impact.evidence_bundle.items.length}</b><span>preuves DataHub</span></div><div><b>{Math.round(impact.confidence * 100)}%</b><span>confiance</span></div></div>
-      <div className="split"><div><h3>Actifs et lineage</h3><ul className="asset-list">{impact.impacted_assets.slice(0, 8).map((item: any) => <li key={item.asset_urn}><code>{item.asset_urn}</code><span>{item.impact_type} · {item.criticality}</span></li>)}</ul>{impact.impacted_assets.length === 0 && <p className="small">Aucun actif aval trouvé dans la profondeur choisie.</p>}</div><div><h3>Plan de remédiation</h3><ol>{plan?.migration_steps.map((step: any) => <li key={step.order}><b>{step.action}</b><span>{step.rationale}</span></li>)}</ol><p className="small"><b>Rollback :</b> {plan?.rollback_plan?.trigger_conditions?.[0] ?? "Défini dans le plan."}</p></div></div>
-      <details className="audit-details"><summary>Justification auditable du risque</summary><ul>{impact.risk_assessment.explanation.map((line: string) => <li key={line}>{line}</li>)}</ul><p className="small"><b>Limites de métadonnées :</b> {impact.missing_metadata.length ? impact.missing_metadata.join(" · ") : "Aucune limite détectée dans ce périmètre."}</p><p className="small"><b>Preuves :</b> {impact.evidence_bundle.items.map((item: any) => item.evidence_id).join(", ")}</p></details>
-    </section>}
-
-    {plan && <section className="panel action-panel"><div><p className="kicker">Étape 4</p><h2>Critique NVIDIA Build</h2><p>Un troisième avis utile au débat. Il ne remplace jamais la double revue finale et ne modifie pas le plan seul.</p></div><button className="secondary" onClick={runCritique} disabled={busy !== null}>{busy === "critique" ? "Critique en cours…" : "Lancer la critique NVIDIA"}</button></section>}
-    {critique && <section className="panel critique"><div className="panel-heading"><div><p className="kicker">Avis consultatif · {critique.model}</p><h2>Résultat NVIDIA</h2></div><span className="badge neutral">confiance {Math.round(critique.confidence * 100)}%</span></div><p>{critique.summary}</p><div className="issues">{critique.issues.map((issue, index) => <article key={`${issue.finding}-${index}`}><b className={`badge ${statusTone(issue.severity === "CRITICAL" ? "FAIL" : "WARN")}`}>{issue.severity}</b><p>{issue.finding}</p><small>Preuves : {issue.evidence_ids.join(", ") || "non citées"}</small></article>)}</div><p className="small"><b>Révisions suggérées :</b> {critique.recommended_revisions.join(" · ") || "Aucune"}</p></section>}
-
-    {plan && <section className="panel action-panel judges-action"><div><p className="kicker">Étape 5 · action payante éventuelle</p><h2>Revue finale indépendante</h2><p>OpenAI et Groq reçoivent le même dossier séparément et ne voient pas le verdict de l’autre. Aucun accès DataHub en écriture.</p></div><button className="primary" onClick={runJudges} disabled={busy !== null}>{busy === "judges" ? "Juges en cours…" : "Lancer OpenAI + Groq"}</button></section>}
-    {judging && <section className="panel judges"><div className="panel-heading"><div><p className="kicker">Run serveur · {judging.run_id}</p><h2>Double revue</h2></div><span className={`badge ${statusTone(judging.result.aggregate_decision?.decision)}`}>{judging.result.aggregate_decision?.decision ?? "GATE 0"}</span></div>
-      {!judging.result.deterministic_validation.passed && <div className="banner error">Gate 0 bloqué : {judging.result.deterministic_validation.errors.join(" · ")}</div>}
-      <div className="judge-grid">{[judging.result.openai_verdict, judging.result.groq_verdict].map((verdict) => verdict && <JudgeCard key={verdict.judge_provider} verdict={verdict} />)}</div>
-      <p className="small"><b>Décision :</b> {judging.result.aggregate_decision?.rationale ?? "Validation déterministe non réussie."}</p>
-      <details className="audit-details"><summary>Justification auditable de la revue</summary><p><b>Gate 0 :</b> {judging.result.deterministic_validation.passed ? "preuves et invariants contrôlés avant les juges" : judging.result.deterministic_validation.errors.join(" · ")}</p><p>Les justifications ci-dessus sont des résumés factuels produits par les juges. Les chaînes de pensée privées ne sont ni affichées ni stockées.</p></details>
-      {judging.result.aggregate_decision?.decision === "FINALIZE_READ_ONLY" && <button className="secondary" onClick={prepareWriteback} disabled={busy !== null}>{busy === "prepare" ? "Préparation…" : "Préparer la proposition HITL"}</button>}
-    </section>}
-
-    {proposal && <section className="panel approval"><div className="panel-heading"><div><p className="kicker">Étape 6 · approbation humaine requise</p><h2>Proposition de write-back</h2></div><span className={`badge ${statusTone(proposal.status)}`}>{proposal.status}</span></div><p><b>Cible :</b> <code>{proposal.target_asset_urn}</code></p><p><b>Mutation autorisée :</b> {proposal.allowed_mutations.join(", ")}</p><details><summary>Voir le document et le snapshot</summary><pre>{proposal.document_content}</pre><pre>{JSON.stringify(proposal.snapshot, null, 2)}</pre></details><div className="approval-actions"><button className="primary" onClick={() => humanDecision("APPROVE_REPORT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL"}>Approuver l’écriture</button><button className="secondary" onClick={() => humanDecision("REQUEST_REVISION")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL"}>Demander une révision</button><button className="danger" onClick={() => humanDecision("REJECT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL"}>Rejeter</button></div></section>}
-
-    <section className="panel history"><p className="kicker">Historique et évaluations</p><h2>Exécutions récentes</h2>{persistedHistory.length ? <ul>{persistedHistory.map((item) => <li key={item.run_id}><code>{item.run_id.slice(0, 8)}</code> · <b className={`badge ${statusTone(item.decision ?? undefined)}`}>{item.decision ?? "GATE 0"}</b> · OpenAI {item.openai_status ?? "—"} · Groq {item.groq_status ?? "—"}</li>)}</ul> : <p className="small">Aucune revue persistée pour le moment.</p>} {history.length > 0 && <p className="small">Session : {history[0]}</p>}</section>
+    {workflowGraph && <section className="panel graph-panel"><div className="panel-heading"><div><p className="kicker">LangGraph</p><h2>Workflow dynamique</h2></div><span className={`badge ${workflowGraph.tracing_enabled ? "good" : "neutral"}`}>{workflowGraph.tracing_enabled ? "LangSmith actif" : "tracing désactivé"}</span></div><WorkflowDiagram graph={workflowGraph} /><p className="small">{workflowGraph.tracing_enabled ? `Traces dans ${workflowGraph.tracing_project ?? "le projet configuré"}.` : "Le tracing est opt-in et aucun secret n’est affiché."}</p></section>}
+    <CatalogExplorer query={catalogQuery} onQuery={setCatalogQuery} onSearch={searchCatalog} onSnapshot={loadCatalogSnapshot} onLoadMore={loadMoreCatalog} hasMore={catalogHasMore} busy={busy} types={catalogTypes} platforms={catalogPlatforms} typeFilter={catalogTypeFilter} platformFilter={catalogPlatformFilter} onType={setCatalogTypeFilter} onPlatform={setCatalogPlatformFilter} graph={catalogGraph} nodes={visibleCatalogNodes} selected={selectedCatalogNode} onSelect={setSelectedCatalogNode} onExpand={expandCatalog} />
+    <div className="layout"><section className="panel request-panel"><div className="panel-heading"><div><p className="kicker">Étape 1</p><h2>Demande de changement</h2></div><span className="readonly">Aucune mutation</span></div><form onSubmit={runImpact}><label>Actif DataHub<input value={assetUrn} onChange={(event) => setAssetUrn(event.target.value)} required /></label><div className="two-col"><label>Type de changement<select value={changeType} onChange={(event) => setChangeType(event.target.value as ChangeType)}><option value="ADD_COLUMN">Ajouter une colonne</option><option value="RENAME_COLUMN">Renommer une colonne</option><option value="CHANGE_COLUMN_TYPE">Changer le type</option><option value="DROP_COLUMN">Supprimer une colonne</option></select></label><label>Profondeur de lineage<select value={depth} onChange={(event) => setDepth(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} saut(s)</option>)}</select></label></div><div className="two-col"><label>Colonne<input value={columnName} onChange={(event) => setColumnName(event.target.value)} required={changeType !== "ADD_COLUMN"} /></label>{changeNeedsValue && <label>{changeType === "RENAME_COLUMN" ? "Nouveau nom" : "Nouveau type"}<input value={newValue} onChange={(event) => setNewValue(event.target.value)} required /></label>}</div><label>Justification<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={5} /></label><button className="primary" disabled={busy !== null}>{busy === "impact" ? "Analyse en cours…" : "Analyser l’impact et générer le plan"}</button></form></section><aside className="panel workflow"><p className="kicker">Contrôles</p><h2>Workflow gouverné</h2><div className="control"><span>DataHub MCP</span><b className="chip good">lecture seule</b></div><div className="control"><span>NVIDIA Build</span><b className="chip">consultatif</b></div><div className="control"><span>OpenAI + Groq</span><b className="chip warn">manuel</b></div><div className="control"><span>Write-back</span><b className="chip bad">HITL obligatoire</b></div></aside></div>
+    {impact && <section className="panel report"><div className="panel-heading"><div><p className="kicker">Étapes 2–3</p><h2>Rapport d’impact et plan</h2></div><span className={`badge ${statusTone(impact.risk_assessment.level)}`}>{impact.risk_assessment.level} · {impact.risk_assessment.score}/100</span></div><div className="metrics"><div><b>{impact.blast_radius}</b><span>actifs impactés</span></div><div><b>{impact.evidence_bundle.items.length}</b><span>preuves DataHub</span></div><div><b>{Math.round(impact.confidence * 100)}%</b><span>confiance</span></div></div><LineageDiagram source={impact.request.asset_urn} impacts={impact.impacted_assets} /><div className="split"><div><h3>Actifs et lineage</h3><ul className="asset-list">{impact.impacted_assets.slice(0, 8).map((item: any) => <li key={item.asset_urn}><code>{item.asset_urn}</code><span>{item.impact_type} · {item.criticality}</span></li>)}</ul></div><div><h3>Plan de remédiation</h3><ol>{plan?.migration_steps.map((step: any) => <li key={step.order}><b>{step.action}</b><span>{step.rationale}</span></li>)}</ol></div></div><details className="audit-details"><summary>Justification auditable</summary><ul>{impact.risk_assessment.explanation.map((line: string) => <li key={line}>{line}</li>)}</ul></details></section>}
+    {plan && <section className="panel action-panel"><div><p className="kicker">Étape 4</p><h2>Critique NVIDIA Build</h2><p>Consultative : aucun changement automatique du plan.</p></div><button className="secondary" onClick={runCritique} disabled={busy !== null}>{busy === "critique" ? "Critique en cours…" : "Lancer la critique NVIDIA"}</button></section>}
+    {critique && <section className="panel critique"><div className="panel-heading"><div><p className="kicker">Avis consultatif · {critique.model}</p><h2>Résultat NVIDIA</h2></div><span className="badge neutral">confiance {Math.round(critique.confidence * 100)}%</span></div><p>{critique.summary}</p>{critique.issues.map((issue, index) => <article className="issue" key={`${issue.finding}-${index}`}><b>{issue.severity}</b><p>{issue.finding}</p></article>)}</section>}
+    {plan && <section className="panel action-panel"><div><p className="kicker">Étape 5 · action externe</p><h2>Revue finale indépendante</h2><p>OpenAI et Groq reçoivent le même dossier sans voir le verdict de l’autre.</p></div><button className="primary" onClick={runJudges} disabled={busy !== null}>{busy === "judges" ? "Juges en cours…" : "Lancer OpenAI + Groq"}</button></section>}
+    {judging && <section className="panel judges"><div className="panel-heading"><div><p className="kicker">Run serveur · {judging.run_id}</p><h2>Double revue</h2></div><span className={`badge ${statusTone(judging.result.aggregate_decision?.decision)}`}>{judging.result.aggregate_decision?.decision ?? "GATE 0"}</span></div>{!judging.result.deterministic_validation.passed && <div className="banner error">Gate 0 bloqué : {judging.result.deterministic_validation.errors.join(" · ")}</div>}<div className="judge-grid">{[judging.result.openai_verdict, judging.result.groq_verdict].map((verdict) => verdict && <JudgeCard key={verdict.judge_provider} verdict={verdict} />)}</div><p className="small"><b>Décision :</b> {judging.result.aggregate_decision?.rationale}</p>{judging.result.aggregate_decision?.decision === "FINALIZE_READ_ONLY" && <button className="secondary" onClick={prepareWriteback} disabled={busy !== null}>Préparer la proposition HITL</button>}</section>}
+    {proposal && <section className="panel approval"><div className="panel-heading"><div><p className="kicker">Étape 6 · HITL</p><h2>Proposition de write-back</h2></div><span className={`badge ${statusTone(proposal.status)}`}>{proposal.status}</span></div><p><b>Mutation autorisée :</b> {proposal.allowed_mutations.join(", ")}</p><details><summary>Document et snapshot</summary><pre>{proposal.document_content}</pre><pre>{JSON.stringify(proposal.snapshot, null, 2)}</pre></details><div className="approval-actions"><button className="primary" onClick={() => decide("APPROVE_REPORT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL"}>Approuver l’écriture</button><button className="secondary" onClick={() => decide("REQUEST_REVISION")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL"}>Demander une révision</button><button className="danger" onClick={() => decide("REJECT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL"}>Rejeter</button></div></section>}
+    <section className="panel history"><p className="kicker">Historique</p><h2>Exécutions récentes</h2>{history.length ? <ul>{history.map((item) => <li key={item.run_id}><code>{item.run_id.slice(0, 8)}</code> · <b className={`badge ${statusTone(item.decision ?? undefined)}`}>{item.decision ?? "GATE 0"}</b> · OpenAI {item.openai_status ?? "—"} · Groq {item.groq_status ?? "—"}</li>)}</ul> : <p className="small">Aucune revue persistée.</p>}</section>
   </main>;
 }
 
-function JudgeCard({ verdict }: { verdict: Verdict }) {
-  return <article className="judge-card"><div><p className="kicker">{verdict.judge_provider}</p><h3>{verdict.judge_model}</h3></div><span className={`badge ${statusTone(verdict.verdict)}`}>{verdict.verdict}</span><div className="score-grid">{Object.entries(verdict.scores).map(([name, score]) => <span key={name}>{name.replace("_", " ")}<b>{score}/5</b></span>)}</div>{verdict.audit_rationale.length > 0 && <details className="audit-details"><summary>Justification auditable</summary><ul>{verdict.audit_rationale.map((line) => <li key={line}>{line}</li>)}</ul></details>}{verdict.critical_errors.length > 0 && <p className="critical"><b>Erreurs critiques :</b> {verdict.critical_errors.join(" · ")}</p>}{verdict.repair_instructions.length > 0 && <p className="small"><b>Réparation :</b> {verdict.repair_instructions.join(" · ")}</p>}<p className="small">Confiance {Math.round(verdict.confidence * 100)}%</p></article>;
+function CatalogExplorer({ query, onQuery, onSearch, onSnapshot, onLoadMore, hasMore, busy, types, platforms, typeFilter, platformFilter, onType, onPlatform, graph, nodes, selected, onSelect, onExpand }: { query: string; onQuery: (value: string) => void; onSearch: (event: FormEvent) => void; onSnapshot: () => void; onLoadMore: () => void; hasMore: boolean; busy: string | null; types: string[]; platforms: string[]; typeFilter: string; platformFilter: string; onType: (value: string) => void; onPlatform: (value: string) => void; graph: CatalogGraph | null; nodes: CatalogNode[]; selected: CatalogNode | null; onSelect: (node: CatalogNode) => void; onExpand: (direction: "UPSTREAM" | "DOWNSTREAM") => void }) {
+  return <section className="panel catalog-panel"><div className="panel-heading"><div><p className="kicker">DataHub MCP · lecture seule</p><h2>Carte 3D du catalogue et du lineage</h2></div><button className="primary" onClick={onSnapshot} disabled={busy !== null}>{busy === "catalog-snapshot" ? "Chargement de tout DataHub…" : "Afficher tout DataHub (3D)"}</button></div><p className="small">La recherche est optionnelle : le bouton principal charge automatiquement toutes les pages du catalogue dans cette carte unique.</p><form className="catalog-controls" onSubmit={onSearch}><label>Rechercher un actif DataHub<input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="orders, dashboard, dbt…" /></label><button className="secondary" disabled={busy !== null}>{busy === "catalog-search" ? "Recherche…" : "Rechercher"}</button><label>Type<select value={typeFilter} onChange={(event) => onType(event.target.value)}><option value="ALL">Tous</option>{types.map((value) => <option key={value}>{value}</option>)}</select></label><label>Plateforme<select value={platformFilter} onChange={(event) => onPlatform(event.target.value)}><option value="ALL">Toutes</option>{platforms.map((value) => <option key={value}>{value}</option>)}</select></label></form>{graph ? <><CatalogThreeD nodes={nodes} edges={graph.edges} onSelect={onSelect} /><CatalogDiagram nodes={nodes} edges={graph.edges} selected={selected?.urn} onSelect={onSelect} />{hasMore && <div className="catalog-more"><p className="small">D’autres actifs existent dans DataHub. Ajoutez-les à la même carte 3D sans lancer de recherche.</p><button className="secondary" onClick={onLoadMore} disabled={busy !== null}>{busy === "catalog-more" ? "Ajout en cours…" : "Charger 50 actifs supplémentaires"}</button></div>}{selected && <div className="catalog-detail"><div><p className="kicker">Actif sélectionné</p><code>{selected.urn}</code><p className="small">{selected.entity_type} · {selected.platform_urn ?? "plateforme non renseignée"} · {selected.owner_urns.length} owner(s)</p></div><div className="catalog-actions"><button className="secondary" onClick={() => onExpand("UPSTREAM")} disabled={busy !== null}>Charger l’amont</button><button className="secondary" onClick={() => onExpand("DOWNSTREAM")} disabled={busy !== null}>Charger l’aval</button></div></div>}</> : <p className="small">Affichez tout DataHub pour visualiser les actifs et liens existants, puis sélectionnez un nœud pour l’explorer.</p>}</section>;
 }
+
+function WorkflowDiagram({ graph }: { graph: WorkflowGraph }) {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node])); const order = ["request", "impact", "plan", "critic", "judges", "hitl"];
+  return <div className="workflow-diagram" role="img" aria-label="Graphe LangGraph">{order.map((id, index) => { const node = nodes.get(id); const next = nodes.get(order[index + 1]); if (!node) return null; return <Fragment key={id}><article className={`graph-node ${node.status.toLowerCase()}`} title={node.description}><span className="node-kind">{node.kind}</span><b>{node.label}</b><small>{node.status.replace("_", " ")}</small></article>{next && <div className="graph-edge">→</div>}</Fragment>; })}</div>;
+}
+
+const graphPalette = ["#4cc9f0", "#f72585", "#fca311", "#80ed99", "#b5179e", "#ffd166", "#90dbf4", "#caffbf"];
+
+function graphColor(group: string) {
+  let hash = 0;
+  for (let index = 0; index < group.length; index += 1) hash = (hash * 31 + group.charCodeAt(index)) | 0;
+  return graphPalette[Math.abs(hash) % graphPalette.length];
+}
+
+function CatalogThreeD({ nodes, edges, onSelect }: { nodes: CatalogNode[]; edges: CatalogEdge[]; onSelect: (node: CatalogNode) => void }) {
+  const groups = useMemo(() => [...new Set(nodes.map((node) => node.platform_urn ?? node.entity_type))].sort(), [nodes]);
+  const graphData = useMemo(() => ({
+    nodes: nodes.map((node) => ({ ...node, id: node.urn, group: node.platform_urn ?? node.entity_type })),
+    links: edges.map((edge) => ({ source: edge.source_urn, target: edge.target_urn, label: `${edge.direction} · ${edge.hops} saut(s)` })),
+  }), [nodes, edges]);
+  return <><div className="catalog-legend" aria-label="Légende des couleurs">{groups.map((group) => <span key={group}><i style={{ backgroundColor: graphColor(group) }} />{group.replace("urn:li:dataPlatform:", "")}</span>)}</div><div className="catalog-3d" role="img" aria-label="Carte 3D interactive des actifs DataHub et de leurs relations"><Suspense fallback={<p className="small">Chargement du moteur 3D…</p>}><ForceGraph3D graphData={graphData} width={980} height={520} backgroundColor="#081225" nodeLabel={(node: object) => { const item = node as CatalogNode; return `${item.label} · ${item.entity_type} · ${item.platform_urn ?? "plateforme inconnue"}`; }} nodeColor={(node: object) => graphColor((node as CatalogNode).platform_urn ?? (node as CatalogNode).entity_type)} nodeRelSize={6} linkColor={() => "#6e9ec5"} linkOpacity={0.72} linkLabel={(link: object) => (link as { label: string }).label} linkDirectionalArrowLength={3} linkDirectionalArrowRelPos={1} showNavInfo onNodeClick={(node: object) => onSelect(node as CatalogNode)} /></Suspense></div></>;
+}
+
+function CatalogDiagram({ nodes, edges, selected, onSelect }: { nodes: CatalogNode[]; edges: CatalogEdge[]; selected?: string; onSelect: (node: CatalogNode) => void }) {
+  const visible = new Set(nodes.map((node) => node.urn)); const visibleEdges = edges.filter((edge) => visible.has(edge.source_urn) && visible.has(edge.target_urn));
+  return <div className="catalog-diagram"><div className="catalog-nodes">{nodes.map((node) => <button type="button" className={`catalog-node ${selected === node.urn ? "selected" : ""}`} onClick={() => onSelect(node)} key={node.urn}><span>{node.entity_type}</span><b>{node.label}</b><small>{node.platform_urn ?? "sans plateforme"}</small>{node.degree != null && <em>{node.degree} saut(s)</em>}</button>)}</div><div className="catalog-edges">{visibleEdges.length ? visibleEdges.map((edge) => <p key={`${edge.source_urn}-${edge.target_urn}-${edge.direction}`}><code>{shortUrn(edge.source_urn)}</code><span>→ {edge.direction === "DOWNSTREAM" ? "aval" : "amont"} · {edge.hops} saut(s) →</span><code>{shortUrn(edge.target_urn)}</code></p>) : <p className="small">Sélectionnez un nœud et chargez son amont ou son aval.</p>}</div></div>;
+}
+
+function LineageDiagram({ source, impacts }: { source: string; impacts: Array<{ asset_urn: string; platform_urn?: string | null; criticality: string }> }) { const displayed = impacts.slice(0, 8); return <section className="lineage-diagram"><div className="lineage-source"><span>source DataHub</span><code>{shortUrn(source)}</code></div><div className="lineage-arrows">→</div><div className="lineage-targets">{displayed.map((item) => <article key={item.asset_urn}><b>{item.criticality}</b><code>{shortUrn(item.asset_urn)}</code><small>{item.platform_urn ?? "plateforme inconnue"}</small></article>)}</div></section>; }
+function JudgeCard({ verdict }: { verdict: Verdict }) { return <article className="judge-card"><div><p className="kicker">{verdict.judge_provider}</p><h3>{verdict.judge_model}</h3></div><span className={`badge ${statusTone(verdict.verdict)}`}>{verdict.verdict}</span><div className="score-grid">{Object.entries(verdict.scores).map(([name, score]) => <span key={name}>{name.replace("_", " ")}<b>{score}/5</b></span>)}</div>{verdict.audit_rationale.length > 0 && <details className="audit-details"><summary>Justification auditable</summary><ul>{verdict.audit_rationale.map((line) => <li key={line}>{line}</li>)}</ul></details>}{verdict.critical_errors.length > 0 && <p className="critical">{verdict.critical_errors.join(" · ")}</p>}</article>; }
+function shortUrn(urn: string) { return urn.length > 58 ? `${urn.slice(0, 26)}…${urn.slice(-28)}` : urn; }

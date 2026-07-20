@@ -18,7 +18,8 @@ flowchart LR
     UI --> API[FastAPI]
     API --> MCP[DataHub MCP - lecture seule]
     MCP --> DH[DataHub Core]
-    API --> IMP[Impact + risque déterministes]
+    API --> LG[LangGraph orchestrateur]
+    LG --> IMP[Impact + risque déterministes]
     IMP --> PLAN[Plan + rollback non exécutés]
     PLAN --> NV[NVIDIA Build - critique consultative]
     PLAN --> OA[OpenAI - juge indépendant]
@@ -38,6 +39,18 @@ flowchart LR
 - OpenAI et Groq reçoivent le même dossier compact, sans voir le verdict de l'autre.
 - Les modèles produisent une **justification auditable** courte ; leurs chaînes de pensée privées ne sont ni demandées, ni affichées, ni stockées.
 - Le write-back requiert Gate 0, double `PASS`, clé d'idempotence, snapshot et décision humaine explicite.
+
+## LangGraph, lineage et tracing
+
+Le backend orchestre les transitions **analyse → plan**, **critique** et **double jugement** avec un vrai `StateGraph` LangGraph. Chaque action externe reste déclenchée manuellement depuis l'interface : le graphe ne donne aucun outil aux LLM et ne peut pas contourner le HITL.
+
+L'interface montre deux graphes complémentaires : le workflow d'exécution (états `PENDING`, `RUNNING`, `COMPLETED` et `AWAITING_HUMAN`) et le lineage DataHub réellement observé après l'analyse. Aucun lineage n'est inventé par un modèle.
+
+Elle propose aussi une **carte 3D dynamique** du catalogue local : chaque point est un actif DataHub et chaque lien provient d'un appel `get_lineage` observé. La carte charge 50 actifs et 300 relations à la fois pour rester interactive ; le bouton de chargement progressif ajoute les pages suivantes à la même visualisation, sans obliger l'utilisateur à rechercher un actif.
+
+L'explorateur de catalogue permet aussi de rechercher des actifs DataHub, de les filtrer localement par type et plateforme, puis de charger au clic leur lineage amont ou aval. Chaque chargement est borné à 100 actifs : l'application ne télécharge jamais tout le catalogue en une fois.
+
+Le tracing LangSmith est facultatif. Les variables `LANGSMITH_*` sont recommandées ; les anciennes variables `LANGCHAIN_*` sont aussi reconnues et normalisées au démarrage. Le backend n'affiche jamais de clé. Les traces ne sont activées que si le flag de tracing et une clé LangSmith sont tous les deux présents.
 
 ```mermaid
 stateDiagram-v2
@@ -104,6 +117,11 @@ NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 NVIDIA_API_KEY=...
 NVIDIA_CRITIC_MODEL=z-ai/glm-5.2
 NVIDIA_TIMEOUT_SECONDS=90
+
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=...
+LANGSMITH_PROJECT=lineageguard-ai
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 
 OPENAI_API_KEY=...
 OPENAI_JUDGE_MODEL=gpt-4.1-mini
@@ -172,6 +190,13 @@ Un `FAIL` est un résultat utile : il ne doit pas être contourné en choisissan
 | `POST` | `/api/v1/remediations/plan` | Plan/rollback non exécutés |
 | `POST` | `/api/v1/debates/critique` | Critique NVIDIA consultative |
 | `POST` | `/api/v1/judges/evaluate` | Gate 0 + OpenAI/Groq |
+| `GET` | `/api/v1/workflows/graph` | Topologie LangGraph sûre pour l'interface |
+| `POST` | `/api/v1/workflows/analyze` | LangGraph : analyse DataHub + plan déterministe |
+| `POST` | `/api/v1/workflows/critique` | LangGraph : critique NVIDIA déclenchée manuellement |
+| `POST` | `/api/v1/workflows/judge` | LangGraph : Gate 0 + juges indépendants |
+| `GET` | `/api/v1/datahub/catalog/search` | Projection sûre des résultats de recherche DataHub |
+| `GET` | `/api/v1/datahub/catalog/expand` | Expansion amont/aval bornée d'un actif sélectionné |
+| `GET` | `/api/v1/datahub/catalog/snapshot` | Carte 3D relationnelle bornée du catalogue local |
 | `GET` | `/api/v1/judges/history` | Historique compact persistant |
 | `POST` | `/api/v1/writebacks/prepare` | Prépare une proposition HITL |
 | `POST` | `/api/v1/writebacks/{run_id}/approve` | Décision humaine ; écriture contrôlée si activée |
@@ -212,6 +237,9 @@ Voir le guide détaillé [docs/troubleshooting.md](docs/troubleshooting.md).
 - [Plan et rollback](docs/remediation-and-rollback.md)
 - [Double jugement](docs/double-judging.md)
 - [Write-back HITL](docs/hitl-writeback.md)
+- [Jeu de données et rapport d'évaluation](evals/README.md)
+- [Rapport final d'évaluation offline](evals/reports/final-evaluation.md)
+- [Vérifications locales reproductibles](evals/reports/local-validation-2026-07-20.md)
 
 ## Licence
 

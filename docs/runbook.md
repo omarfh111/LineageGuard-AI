@@ -47,7 +47,7 @@ Créez les clés uniquement dans les consoles officielles, copiez-les directemen
 | Critique consultative | `NVIDIA_API_KEY` | NVIDIA Build | Le modèle est configurable ; `z-ai/glm-5.2` est l'exemple retenu pour cette démo. |
 | Juge de grounding | `OPENAI_API_KEY` | OpenAI | Le modèle est défini par `OPENAI_JUDGE_MODEL`. |
 | Juge technique/sécurité | `GROQ_API_KEY` | Groq | Le modèle est défini par `GROQ_JUDGE_MODEL`. |
-| Tracing facultatif | `LANGCHAIN_API_KEY` | LangSmith | Ne l'activer que si le tracing est réellement utilisé. |
+| Tracing facultatif | `LANGSMITH_API_KEY` | LangSmith | Utiliser aussi `LANGSMITH_TRACING=true`; les anciennes variables `LANGCHAIN_*` restent compatibles. |
 
 Configuration minimale recommandée :
 
@@ -58,6 +58,11 @@ NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 NVIDIA_API_KEY=...
 NVIDIA_CRITIC_MODEL=z-ai/glm-5.2
 NVIDIA_TIMEOUT_SECONDS=90
+
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=...
+LANGSMITH_PROJECT=lineageguard-ai
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 
 OPENAI_API_KEY=...
 OPENAI_JUDGE_MODEL=gpt-4.1-mini

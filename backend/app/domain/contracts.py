@@ -332,3 +332,80 @@ class JudgingRunSummary(BaseModel):
     decision: AggregateDecision | None
     openai_status: JudgeStatus | None
     groq_status: JudgeStatus | None
+
+
+class WorkflowNodeStatus(StrEnum):
+    """Visible state of one non-mutating workflow node."""
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    BLOCKED = "BLOCKED"
+    AWAITING_HUMAN = "AWAITING_HUMAN"
+
+
+class WorkflowNode(BaseModel):
+    id: str
+    label: str
+    kind: str
+    status: WorkflowNodeStatus
+    description: str
+
+
+class WorkflowEdge(BaseModel):
+    source: str
+    target: str
+    label: str | None = None
+
+
+class WorkflowVisualization(BaseModel):
+    """Safe graph description for the dynamic frontend; never includes secrets."""
+
+    nodes: list[WorkflowNode]
+    edges: list[WorkflowEdge]
+    tracing_enabled: bool
+    tracing_project: str | None = None
+
+
+class WorkflowAnalysisExecution(BaseModel):
+    impact_report: ImpactReport
+    remediation_plan: RemediationPlan
+    graph: WorkflowVisualization
+
+
+class WorkflowCritiqueExecution(BaseModel):
+    critique: AdvisoryCritique
+    graph: WorkflowVisualization
+
+
+class WorkflowJudgingExecution(BaseModel):
+    judging: StoredJudgingResult
+    graph: WorkflowVisualization
+
+
+class CatalogNode(BaseModel):
+    """One safe DataHub asset projection for the interactive catalog graph."""
+
+    urn: str
+    label: str
+    entity_type: str = "UNKNOWN"
+    platform_urn: str | None = None
+    owner_urns: list[str] = Field(default_factory=list)
+    degree: int | None = None
+
+
+class CatalogEdge(BaseModel):
+    source_urn: str
+    target_urn: str
+    direction: str
+    hops: int = Field(ge=1, le=5)
+
+
+class CatalogGraph(BaseModel):
+    """Bounded catalog projection; this is not an unbounded DataHub export."""
+
+    nodes: list[CatalogNode]
+    edges: list[CatalogEdge]
+    query: str | None = None
+    max_hops: int | None = None
+    truncated: bool = False

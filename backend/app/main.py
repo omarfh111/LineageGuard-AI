@@ -10,6 +10,10 @@ from app.api.v1.health import router as health_router
 from app.api.v1.judging import router as judging_router
 from app.api.v1.remediation import router as remediation_router
 from app.api.v1.writeback import router as writeback_router
+from app.api.v1.workflow import router as workflow_router
+from app.core.config import configure_langsmith_tracing
+
+configure_langsmith_tracing()
 
 app = FastAPI(
     title="LineageGuard AI API",
@@ -35,3 +39,4 @@ app.include_router(remediation_router, prefix="/api/v1")
 app.include_router(debate_router, prefix="/api/v1")
 app.include_router(judging_router, prefix="/api/v1")
 app.include_router(writeback_router, prefix="/api/v1")
+app.include_router(workflow_router, prefix="/api/v1")
