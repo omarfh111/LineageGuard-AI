@@ -409,3 +409,71 @@ class CatalogGraph(BaseModel):
     query: str | None = None
     max_hops: int | None = None
     truncated: bool = False
+
+
+class RagIndexState(StrEnum):
+    IDLE = "IDLE"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class RagIndexStatus(BaseModel):
+    """Safe status for the metadata-only Qdrant index."""
+
+    state: RagIndexState = RagIndexState.IDLE
+    indexed_assets: int = Field(default=0, ge=0)
+    total_assets: int = Field(default=0, ge=0)
+    message: str = "Index not started."
+    updated_at: datetime | None = None
+
+
+class RagCitation(BaseModel):
+    urn: str
+    label: str
+    entity_type: str
+    platform_urn: str | None = None
+    source: str
+    score: float | None = None
+
+
+class ChatActionType(StrEnum):
+    NONE = "NONE"
+    ANALYZE_IMPACT = "ANALYZE_IMPACT"
+    HITL_WRITEBACK = "HITL_WRITEBACK"
+
+
+class ChatActionProposal(BaseModel):
+    action: ChatActionType = ChatActionType.NONE
+    requires_confirmation: bool = False
+    reason: str
+    required_fields: list[str] = Field(default_factory=list)
+
+
+class AgenticTraceStep(BaseModel):
+    """Auditable, compact execution trace; never private chain-of-thought."""
+
+    id: str
+    label: str
+    status: str
+    detail: str
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=2, max_length=4000)
+    max_sources: int = Field(default=6, ge=1, le=12)
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    citations: list[RagCitation]
+    verification_note: str
+    action_proposal: ChatActionProposal
+    agent_trace: list[AgenticTraceStep] = Field(default_factory=list)
+
+
+class ChatAnalysisRequest(BaseModel):
+    """Explicitly confirmed, read-only handoff from chat to the impact workflow."""
+
+    change_request: ChangeRequest
+    confirmed: bool = False

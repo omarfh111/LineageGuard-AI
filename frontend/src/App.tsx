@@ -19,6 +19,8 @@ type WorkflowGraph = { nodes: Array<{ id: string; label: string; kind: string; s
 type CatalogNode = { urn: string; label: string; entity_type: string; platform_urn?: string | null; owner_urns: string[]; degree?: number | null };
 type CatalogEdge = { source_urn: string; target_urn: string; direction: string; hops: number };
 type CatalogGraph = { nodes: CatalogNode[]; edges: CatalogEdge[]; truncated: boolean };
+type RagStatus = { state: "IDLE" | "RUNNING" | "COMPLETED" | "FAILED"; indexed_assets: number; total_assets: number; message: string };
+type ChatReply = { answer: string; citations: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null; source: string; score?: number | null }>; verification_note: string; action_proposal: { action: "NONE" | "ANALYZE_IMPACT" | "HITL_WRITEBACK"; requires_confirmation: boolean; reason: string; required_fields: string[] }; agent_trace: Array<{ id: string; label: string; status: string; detail: string }> };
 
 async function request<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, { method: body ? "POST" : "GET", headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });
@@ -57,6 +59,11 @@ export default function App() {
   const [selectedCatalogNode, setSelectedCatalogNode] = useState<CatalogNode | null>(null);
   const [catalogTypeFilter, setCatalogTypeFilter] = useState("ALL");
   const [catalogPlatformFilter, setCatalogPlatformFilter] = useState("ALL");
+  const [catalogBusy, setCatalogBusy] = useState<string | null>(null);
+  const [ragStatus, setRagStatus] = useState<RagStatus | null>(null);
+  const [chatInput, setChatInput] = useState("");
+  const [chatReply, setChatReply] = useState<ChatReply | null>(null);
+  const [chatBusy, setChatBusy] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -65,7 +72,14 @@ export default function App() {
     request<Health>("/api/v1/health").then(setHealth).catch(() => setHealth(null));
     request<RunSummary[]>("/api/v1/judges/history").then(setHistory).catch(() => setHistory([]));
     request<WorkflowGraph>("/api/v1/workflows/graph").then(setWorkflowGraph).catch(() => setWorkflowGraph(null));
+    request<RagStatus>("/api/v1/chat/index/status").then(setRagStatus).catch(() => setRagStatus(null));
   }, []);
+
+  useEffect(() => {
+    if (ragStatus?.state !== "RUNNING") return;
+    const timer = window.setInterval(() => request<RagStatus>("/api/v1/chat/index/status").then(setRagStatus).catch(() => undefined), 2500);
+    return () => window.clearInterval(timer);
+  }, [ragStatus?.state]);
 
   const changeNeedsValue = changeType === "RENAME_COLUMN" || changeType === "CHANGE_COLUMN_TYPE";
   const payload = useMemo(() => ({ asset_urn: assetUrn.trim(), change_type: changeType, column_name: columnName.trim() || undefined, new_value: changeNeedsValue ? newValue.trim() : undefined, reason: reason.trim(), environment: "PRODUCTION", lineage_depth: depth, column_nullable: changeType === "ADD_COLUMN" ? true : undefined, type_change_compatible: changeType === "CHANGE_COLUMN_TYPE" ? false : undefined }), [assetUrn, changeType, columnName, newValue, reason, depth, changeNeedsValue]);
@@ -104,17 +118,17 @@ export default function App() {
     catch (caught) { setError(caught instanceof Error ? caught.message : "Revue des juges impossible"); } finally { setBusy(null); }
   }
   async function searchCatalog(event: FormEvent) {
-    event.preventDefault(); if (!catalogQuery.trim()) return; setBusy("catalog-search"); setError(null);
+    event.preventDefault(); if (!catalogQuery.trim()) return; setCatalogBusy("catalog-search"); setError(null);
     try { const graph = await request<CatalogGraph>(`/api/v1/datahub/catalog/search?query=${encodeURIComponent(catalogQuery.trim())}`); setCatalogGraph(graph); setSelectedCatalogNode(graph.nodes[0] ?? null); setNotice(`${graph.nodes.length} actif(s) chargés depuis DataHub.`); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "Recherche catalogue impossible"); } finally { setBusy(null); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Recherche catalogue impossible"); } finally { setCatalogBusy(null); }
   }
   async function expandCatalog(direction: "UPSTREAM" | "DOWNSTREAM") {
-    if (!selectedCatalogNode) return; setBusy(`catalog-${direction}`); setError(null);
+    if (!selectedCatalogNode) return; setCatalogBusy(`catalog-${direction}`); setError(null);
     try { const graph = await request<CatalogGraph>(`/api/v1/datahub/catalog/expand?asset_urn=${encodeURIComponent(selectedCatalogNode.urn)}&direction=${direction}&max_hops=2`); mergeCatalogGraph(graph); setNotice(`Lineage ${direction === "DOWNSTREAM" ? "aval" : "amont"} chargé.`); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "Expansion de lineage impossible"); } finally { setBusy(null); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Expansion de lineage impossible"); } finally { setCatalogBusy(null); }
   }
   async function loadCatalogSnapshot() {
-    setBusy("catalog-snapshot"); setError(null);
+    setCatalogBusy("catalog-snapshot"); setError(null);
     try {
       let offset = 0; let hasMore = true; let firstPage = true;
       const assetUrns = new Set<string>(); const relationKeys = new Set<string>();
@@ -130,15 +144,33 @@ export default function App() {
         setNotice(`Carte 3D : ${assetUrns.size} actifs et ${relationKeys.size} relations chargés${hasMore ? "…" : "."}`);
       }
     }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "Carte complète impossible"); } finally { setBusy(null); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Carte complète impossible"); } finally { setCatalogBusy(null); }
   }
   async function loadMoreCatalog() {
-    setBusy("catalog-more"); setError(null);
+    setCatalogBusy("catalog-more"); setError(null);
     try {
       const graph = await request<CatalogGraph>(`/api/v1/datahub/catalog/snapshot?max_assets=50&max_edges=300&offset=${catalogOffset}`);
       mergeCatalogGraph(graph); setCatalogOffset((value) => value + 50); setCatalogHasMore(graph.truncated);
       setNotice(`${graph.nodes.length} actifs supplémentaires intégrés à la carte 3D.`);
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Chargement supplémentaire impossible"); } finally { setBusy(null); }
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Chargement supplémentaire impossible"); } finally { setCatalogBusy(null); }
+  }
+  async function startRagIndex() {
+    setChatBusy("index"); setError(null);
+    try { const status = await request<RagStatus>("/api/v1/chat/index/ingest", {}); setRagStatus(status); setNotice("Indexation RAG lancée en arrière-plan. Les agents restent utilisables."); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Indexation RAG impossible"); } finally { setChatBusy(null); }
+  }
+  async function askChat(event: FormEvent) {
+    event.preventDefault(); if (!chatInput.trim()) return; setChatBusy("query"); setError(null);
+    try { const reply = await request<ChatReply>("/api/v1/chat/query", { message: chatInput.trim() }); setChatReply(reply); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Question impossible"); } finally { setChatBusy(null); }
+  }
+  async function runChatAnalysis() {
+    if (!window.confirm("Lancer l’analyse d’impact en lecture seule avec les champs du formulaire ?")) return;
+    setChatBusy("analysis"); setError(null);
+    try {
+      const execution = await request<{ impact_report: ImpactReport; remediation_plan: RemediationPlan; graph: WorkflowGraph }>("/api/v1/chat/execute-analysis", { change_request: payload, confirmed: true });
+      resetAfterImpact(); setImpact(execution.impact_report); setPlan(execution.remediation_plan); setWorkflowGraph(execution.graph); setNotice("Analyse DataHub lancée depuis le chat : aucune écriture n’a été exécutée.");
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Analyse depuis le chat impossible"); } finally { setChatBusy(null); }
   }
   async function prepareWriteback() {
     if (!judging) return; setBusy("prepare"); setError(null);
@@ -157,7 +189,8 @@ export default function App() {
     <section className="guardrail"><strong>Mode sûr</strong><span>DataHub reste en lecture seule ; les juges sont manuels et toute écriture exige le HITL.</span></section>
     {error && <div className="banner error">{error}</div>}{notice && <div className="banner notice">{notice}</div>}
     {workflowGraph && <section className="panel graph-panel"><div className="panel-heading"><div><p className="kicker">LangGraph</p><h2>Workflow dynamique</h2></div><span className={`badge ${workflowGraph.tracing_enabled ? "good" : "neutral"}`}>{workflowGraph.tracing_enabled ? "LangSmith actif" : "tracing désactivé"}</span></div><WorkflowDiagram graph={workflowGraph} /><p className="small">{workflowGraph.tracing_enabled ? `Traces dans ${workflowGraph.tracing_project ?? "le projet configuré"}.` : "Le tracing est opt-in et aucun secret n’est affiché."}</p></section>}
-    <CatalogExplorer query={catalogQuery} onQuery={setCatalogQuery} onSearch={searchCatalog} onSnapshot={loadCatalogSnapshot} onLoadMore={loadMoreCatalog} hasMore={catalogHasMore} busy={busy} types={catalogTypes} platforms={catalogPlatforms} typeFilter={catalogTypeFilter} platformFilter={catalogPlatformFilter} onType={setCatalogTypeFilter} onPlatform={setCatalogPlatformFilter} graph={catalogGraph} nodes={visibleCatalogNodes} selected={selectedCatalogNode} onSelect={setSelectedCatalogNode} onExpand={expandCatalog} />
+    <CatalogExplorer query={catalogQuery} onQuery={setCatalogQuery} onSearch={searchCatalog} onSnapshot={loadCatalogSnapshot} onLoadMore={loadMoreCatalog} hasMore={catalogHasMore} busy={catalogBusy} types={catalogTypes} platforms={catalogPlatforms} typeFilter={catalogTypeFilter} platformFilter={catalogPlatformFilter} onType={setCatalogTypeFilter} onPlatform={setCatalogPlatformFilter} graph={catalogGraph} nodes={visibleCatalogNodes} selected={selectedCatalogNode} onSelect={setSelectedCatalogNode} onExpand={expandCatalog} />
+    <ChatPanel status={ragStatus} reply={chatReply} input={chatInput} onInput={setChatInput} onIndex={startRagIndex} onAsk={askChat} onAnalyze={runChatAnalysis} busy={chatBusy} />
     <div className="layout"><section className="panel request-panel"><div className="panel-heading"><div><p className="kicker">Étape 1</p><h2>Demande de changement</h2></div><span className="readonly">Aucune mutation</span></div><form onSubmit={runImpact}><label>Actif DataHub<input value={assetUrn} onChange={(event) => setAssetUrn(event.target.value)} required /></label><div className="two-col"><label>Type de changement<select value={changeType} onChange={(event) => setChangeType(event.target.value as ChangeType)}><option value="ADD_COLUMN">Ajouter une colonne</option><option value="RENAME_COLUMN">Renommer une colonne</option><option value="CHANGE_COLUMN_TYPE">Changer le type</option><option value="DROP_COLUMN">Supprimer une colonne</option></select></label><label>Profondeur de lineage<select value={depth} onChange={(event) => setDepth(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} saut(s)</option>)}</select></label></div><div className="two-col"><label>Colonne<input value={columnName} onChange={(event) => setColumnName(event.target.value)} required={changeType !== "ADD_COLUMN"} /></label>{changeNeedsValue && <label>{changeType === "RENAME_COLUMN" ? "Nouveau nom" : "Nouveau type"}<input value={newValue} onChange={(event) => setNewValue(event.target.value)} required /></label>}</div><label>Justification<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={5} /></label><button className="primary" disabled={busy !== null}>{busy === "impact" ? "Analyse en cours…" : "Analyser l’impact et générer le plan"}</button></form></section><aside className="panel workflow"><p className="kicker">Contrôles</p><h2>Workflow gouverné</h2><div className="control"><span>DataHub MCP</span><b className="chip good">lecture seule</b></div><div className="control"><span>NVIDIA Build</span><b className="chip">consultatif</b></div><div className="control"><span>OpenAI + Groq</span><b className="chip warn">manuel</b></div><div className="control"><span>Write-back</span><b className="chip bad">HITL obligatoire</b></div></aside></div>
     {impact && <section className="panel report"><div className="panel-heading"><div><p className="kicker">Étapes 2–3</p><h2>Rapport d’impact et plan</h2></div><span className={`badge ${statusTone(impact.risk_assessment.level)}`}>{impact.risk_assessment.level} · {impact.risk_assessment.score}/100</span></div><div className="metrics"><div><b>{impact.blast_radius}</b><span>actifs impactés</span></div><div><b>{impact.evidence_bundle.items.length}</b><span>preuves DataHub</span></div><div><b>{Math.round(impact.confidence * 100)}%</b><span>confiance</span></div></div><LineageDiagram source={impact.request.asset_urn} impacts={impact.impacted_assets} /><div className="split"><div><h3>Actifs et lineage</h3><ul className="asset-list">{impact.impacted_assets.slice(0, 8).map((item: any) => <li key={item.asset_urn}><code>{item.asset_urn}</code><span>{item.impact_type} · {item.criticality}</span></li>)}</ul></div><div><h3>Plan de remédiation</h3><ol>{plan?.migration_steps.map((step: any) => <li key={step.order}><b>{step.action}</b><span>{step.rationale}</span></li>)}</ol></div></div><details className="audit-details"><summary>Justification auditable</summary><ul>{impact.risk_assessment.explanation.map((line: string) => <li key={line}>{line}</li>)}</ul></details></section>}
     {plan && <section className="panel action-panel"><div><p className="kicker">Étape 4</p><h2>Critique NVIDIA Build</h2><p>Consultative : aucun changement automatique du plan.</p></div><button className="secondary" onClick={runCritique} disabled={busy !== null}>{busy === "critique" ? "Critique en cours…" : "Lancer la critique NVIDIA"}</button></section>}
@@ -173,8 +206,13 @@ function CatalogExplorer({ query, onQuery, onSearch, onSnapshot, onLoadMore, has
   return <section className="panel catalog-panel"><div className="panel-heading"><div><p className="kicker">DataHub MCP · lecture seule</p><h2>Carte 3D du catalogue et du lineage</h2></div><button className="primary" onClick={onSnapshot} disabled={busy !== null}>{busy === "catalog-snapshot" ? "Chargement de tout DataHub…" : "Afficher tout DataHub (3D)"}</button></div><p className="small">La recherche est optionnelle : le bouton principal charge automatiquement toutes les pages du catalogue dans cette carte unique.</p><form className="catalog-controls" onSubmit={onSearch}><label>Rechercher un actif DataHub<input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="orders, dashboard, dbt…" /></label><button className="secondary" disabled={busy !== null}>{busy === "catalog-search" ? "Recherche…" : "Rechercher"}</button><label>Type<select value={typeFilter} onChange={(event) => onType(event.target.value)}><option value="ALL">Tous</option>{types.map((value) => <option key={value}>{value}</option>)}</select></label><label>Plateforme<select value={platformFilter} onChange={(event) => onPlatform(event.target.value)}><option value="ALL">Toutes</option>{platforms.map((value) => <option key={value}>{value}</option>)}</select></label></form>{graph ? <><CatalogThreeD nodes={nodes} edges={graph.edges} onSelect={onSelect} /><CatalogDiagram nodes={nodes} edges={graph.edges} selected={selected?.urn} onSelect={onSelect} />{hasMore && <div className="catalog-more"><p className="small">D’autres actifs existent dans DataHub. Ajoutez-les à la même carte 3D sans lancer de recherche.</p><button className="secondary" onClick={onLoadMore} disabled={busy !== null}>{busy === "catalog-more" ? "Ajout en cours…" : "Charger 50 actifs supplémentaires"}</button></div>}{selected && <div className="catalog-detail"><div><p className="kicker">Actif sélectionné</p><code>{selected.urn}</code><p className="small">{selected.entity_type} · {selected.platform_urn ?? "plateforme non renseignée"} · {selected.owner_urns.length} owner(s)</p></div><div className="catalog-actions"><button className="secondary" onClick={() => onExpand("UPSTREAM")} disabled={busy !== null}>Charger l’amont</button><button className="secondary" onClick={() => onExpand("DOWNSTREAM")} disabled={busy !== null}>Charger l’aval</button></div></div>}</> : <p className="small">Affichez tout DataHub pour visualiser les actifs et liens existants, puis sélectionnez un nœud pour l’explorer.</p>}</section>;
 }
 
+function ChatPanel({ status, reply, input, onInput, onIndex, onAsk, onAnalyze, busy }: { status: RagStatus | null; reply: ChatReply | null; input: string; onInput: (value: string) => void; onIndex: () => void; onAsk: (event: FormEvent) => void; onAnalyze: () => void; busy: string | null }) {
+  const ready = status?.state === "COMPLETED";
+  return <section className="panel chat-panel"><div className="panel-heading"><div><p className="kicker">Agentic RAG + MCP</p><h2>Assistant DataHub vérifié</h2></div><span className={`badge ${ready ? "good" : "neutral"}`}>{status?.state ?? "INDISPONIBLE"}</span></div><p className="small">Planification → Qdrant → outils MCP → raisonnement → vérification. Le chat ne peut pas écrire dans DataHub.</p><div className="chat-index"><span>{status?.message ?? "Démarrez l’indexation contrôlée."}{status?.state === "RUNNING" ? ` ${status.indexed_assets} actifs indexés.` : ""}</span><button className="secondary" onClick={onIndex} disabled={busy !== null || status?.state === "RUNNING"}>{busy === "index" || status?.state === "RUNNING" ? "Indexation…" : "Indexer les métadonnées DataHub"}</button></div><form className="chat-form" onSubmit={onAsk}><textarea value={input} onChange={(event) => onInput(event.target.value)} placeholder="Ex. Quels dashboards dépendent de orders ?" disabled={!ready || busy !== null} /><button className="primary" disabled={!ready || busy !== null}>{busy === "query" ? "Vérification…" : "Poser la question"}</button></form>{reply && <div className="chat-answer"><p>{reply.answer}</p><p className="small">{reply.verification_note}</p><div className="chat-trace">{reply.agent_trace.map((step) => <article key={step.id}><b>{step.label}</b><small>{step.status}</small><span>{step.detail}</span></article>)}</div><div className="chat-citations">{reply.citations.map((citation) => <code key={`${citation.source}-${citation.urn}`}>{citation.label} · {citation.entity_type} · {citation.source === "datahub_mcp_live" ? "MCP vérifié" : "RAG"}</code>)}</div>{reply.action_proposal.action !== "NONE" && <div className="chat-action"><b>Action proposée : {reply.action_proposal.action}</b><p>{reply.action_proposal.reason}</p>{reply.action_proposal.action === "ANALYZE_IMPACT" && <button className="secondary" onClick={onAnalyze} disabled={busy !== null}>Confirmer l’analyse en lecture seule</button>}{reply.action_proposal.action === "HITL_WRITEBACK" && <p className="small">Le write-back reste disponible uniquement via la proposition HITL existante, après double PASS.</p>}</div>}</div>}</section>;
+}
+
 function WorkflowDiagram({ graph }: { graph: WorkflowGraph }) {
-  const nodes = new Map(graph.nodes.map((node) => [node.id, node])); const order = ["request", "impact", "plan", "critic", "judges", "hitl"];
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node])); const order = ["request", "metadata", "impact", "plan", "critic", "judges", "hitl"];
   return <div className="workflow-diagram" role="img" aria-label="Graphe LangGraph">{order.map((id, index) => { const node = nodes.get(id); const next = nodes.get(order[index + 1]); if (!node) return null; return <Fragment key={id}><article className={`graph-node ${node.status.toLowerCase()}`} title={node.description}><span className="node-kind">{node.kind}</span><b>{node.label}</b><small>{node.status.replace("_", " ")}</small></article>{next && <div className="graph-edge">→</div>}</Fragment>; })}</div>;
 }
 

@@ -30,6 +30,14 @@ services:
       LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY:-}
       LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT:-}
       LANGCHAIN_ENDPOINT: ${LANGCHAIN_ENDPOINT:-}
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-lineageguard_datahub}
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-text-embedding-3-small}
+      RAG_MAX_ASSETS: ${RAG_MAX_ASSETS:-1500}
+      OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-${OPENAI_JUDGE_MODEL:-}}
+    depends_on:
+      qdrant:
+        condition: service_healthy
     ports:
       - "8000:8000"
     volumes:
@@ -44,6 +52,20 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.5
+    ports:
+      - "6333:6333"
+    volumes:
+      - lineageguard-qdrant-data:/qdrant/storage
+    healthcheck:
+      # The minimal Qdrant image does not ship wget or curl. Bash's TCP probe
+      # confirms that the REST listener is accepting connections before the API starts.
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
   frontend:
     build:
@@ -64,3 +86,4 @@ services:
 
 volumes:
   lineageguard-backend-data:
+  lineageguard-qdrant-data:

@@ -32,6 +32,11 @@ class Settings:
     datahub_writeback_enabled: bool = False
     langsmith_tracing_enabled: bool = False
     langsmith_project: str | None = None
+    qdrant_url: str = "http://qdrant:6333"
+    qdrant_collection: str = "lineageguard_datahub"
+    rag_embedding_model: str = "text-embedding-3-small"
+    chat_model: str | None = None
+    rag_max_assets: int = 1500
 
 
 def get_settings() -> Settings:
@@ -61,6 +66,11 @@ def get_settings() -> Settings:
             and bool(os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY"))
         ),
         langsmith_project=os.getenv("LANGSMITH_PROJECT") or os.getenv("LANGCHAIN_PROJECT") or None,
+        qdrant_url=os.getenv("QDRANT_URL", "http://qdrant:6333").rstrip("/"),
+        qdrant_collection=os.getenv("QDRANT_COLLECTION", "lineageguard_datahub"),
+        rag_embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small"),
+        chat_model=os.getenv("OPENAI_CHAT_MODEL") or os.getenv("OPENAI_JUDGE_MODEL") or None,
+        rag_max_assets=int(os.getenv("RAG_MAX_ASSETS", "1500")),
     )
 
 

@@ -48,6 +48,48 @@ L'interface montre deux graphes complémentaires : le workflow d'exécution (ét
 
 Elle propose aussi une **carte 3D dynamique** du catalogue local : chaque point est un actif DataHub et chaque lien provient d'un appel `get_lineage` observé. La carte charge 50 actifs et 300 relations à la fois pour rester interactive ; le bouton de chargement progressif ajoute les pages suivantes à la même visualisation, sans obliger l'utilisateur à rechercher un actif.
 
+La carte se charge en arrière-plan : son chargement ne bloque plus l'analyse d'impact, les juges, ni le nouvel assistant. L'assistant applique une architecture **Agentic RAG + MCP** : Qdrant retrouve une projection sûre de métadonnées, DataHub MCP vérifie les actifs en direct, puis le modèle répond avec des citations. Il ne dispose d'aucun outil d'écriture ; une demande de changement est routée vers l'analyse LangGraph en lecture seule, et une demande d'écriture vers le HITL existant.
+
+## Assistant Agentic RAG + MCP
+
+Le chat est un graphe LangGraph exécutable, pas un simple appel « retrieve then answer » :
+
+```mermaid
+flowchart TD
+    U[Question utilisateur] --> P[Planning agent]
+    P --> R[Qdrant RAG retriever]
+    R --> M[DataHub MCP tool manager]
+    M --> X[Reasoning agent]
+    X --> V[Verification agent]
+    V --> F[Réponse citée]
+    P -->|changement de schéma| A[Analyse LangGraph read-only]
+    P -->|demande d'écriture| H[Double jugement + HITL]
+```
+
+| Étape | Rôle | Garantie |
+|---|---|---|
+| Planning agent | Classe la question et sélectionne les lectures utiles | Aucun outil d'écriture disponible |
+| RAG retriever | Découvre les actifs pertinents dans Qdrant | Projection de métadonnées uniquement |
+| MCP tool manager | Lit `search`, `list_schema_fields` et `get_lineage` selon la demande | Liste blanche MCP, lecture seule |
+| Reasoning agent | Rédige à partir des sources RAG et MCP | Réponse citée, aucune action externe |
+| Verification agent | Contrôle la présence de citations et de résultats MCP live | Ne prétend pas à une vérification inexistante |
+
+Qdrant n'est pas une copie de DataHub : il ne stocke ni lignes de tables, ni SQL, ni secrets, ni payloads GraphQL. Les aspects dynamiques — schéma, lineage, propriétaires et recherche — restent lus à la demande via DataHub MCP. Après le chargement local `showcase-ecommerce`, l'index contrôlé a indexé **1 188 actifs catalogués** ; cette métrique peut varier avec le datapack ou la version DataHub.
+
+### Évaluation et métriques locales
+
+| Mesure | Résultat observé |
+|---|---:|
+| Tests backend déterministes | 46 réussis |
+| Tests d'intégration optionnels | 3 ignorés hors services externes |
+| Build TypeScript + Vite | réussi |
+| Actifs Qdrant indexés | 1 188 |
+| Évaluation live lineage | 5 étapes agentiques complétées |
+| Outils MCP live validés | `search`, fallback par actif, `get_lineage` |
+| Mutations DataHub depuis le chat | 0 — interdites par conception |
+
+L'évaluation live contrôle le chemin `planning → RAG → MCP → reasoning → verification`. L'interface affiche cette trace publique et concise après chaque réponse ; elle n'affiche jamais de chaîne de pensée privée.
+
 L'explorateur de catalogue permet aussi de rechercher des actifs DataHub, de les filtrer localement par type et plateforme, puis de charger au clic leur lineage amont ou aval. Chaque chargement est borné à 100 actifs : l'application ne télécharge jamais tout le catalogue en une fois.
 
 Le tracing LangSmith est facultatif. Les variables `LANGSMITH_*` sont recommandées ; les anciennes variables `LANGCHAIN_*` sont aussi reconnues et normalisées au démarrage. Le backend n'affiche jamais de clé. Les traces ne sont activées que si le flag de tracing et une clé LangSmith sont tous les deux présents.
@@ -125,6 +167,11 @@ LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 
 OPENAI_API_KEY=...
 OPENAI_JUDGE_MODEL=gpt-4.1-mini
+OPENAI_CHAT_MODEL=gpt-4.1-mini
+RAG_EMBEDDING_MODEL=text-embedding-3-small
+RAG_MAX_ASSETS=1500
+QDRANT_URL=http://qdrant:6333
+QDRANT_COLLECTION=lineageguard_datahub
 GROQ_API_KEY=...
 GROQ_JUDGE_MODEL=openai/gpt-oss-20b
 JUDGE_TEMPERATURE=0
@@ -154,6 +201,7 @@ Services attendus :
 | Interface | <http://localhost:5173> | Démonstration gouvernée |
 | API | <http://localhost:8000/docs> | OpenAPI / tests manuels |
 | Santé API | <http://localhost:8000/api/v1/health> | Vérification backend |
+| Qdrant | <http://localhost:6333/dashboard> | Index vectoriel de métadonnées sûres |
 | DataHub | <http://localhost:9002> | Métadonnées de démo |
 
 ## Parcours de démonstration dans l'interface
@@ -165,6 +213,7 @@ Services attendus :
 5. Cliquer **Lancer OpenAI + Groq** seulement lorsque vous acceptez les appels externes. Les deux juges sont indépendants.
 6. Ouvrir les sections **Justification auditable** : elles donnent les critères observables et preuves, sans exposer de raisonnement privé.
 7. Si la décision est `FINALIZE_READ_ONLY`, préparer la proposition HITL. Garder `DATAHUB_WRITEBACK_ENABLED=false` pour une démo sans écriture réelle.
+8. Pour le chat, cliquer **Indexer les métadonnées DataHub**, puis attendre l'état `COMPLETED`. L'indexation est manuelle car elle appelle le fournisseur d'embeddings.
 
 ## Décision des juges
 
@@ -198,6 +247,10 @@ Un `FAIL` est un résultat utile : il ne doit pas être contourné en choisissan
 | `GET` | `/api/v1/datahub/catalog/expand` | Expansion amont/aval bornée d'un actif sélectionné |
 | `GET` | `/api/v1/datahub/catalog/snapshot` | Carte 3D relationnelle bornée du catalogue local |
 | `GET` | `/api/v1/judges/history` | Historique compact persistant |
+| `GET` | `/api/v1/chat/index/status` | État de l'index Qdrant |
+| `POST` | `/api/v1/chat/index/ingest` | Démarre l'indexation manuelle, sans écriture DataHub |
+| `POST` | `/api/v1/chat/query` | RAG Qdrant + vérification DataHub MCP, sans mutation |
+| `POST` | `/api/v1/chat/execute-analysis` | Handoff confirmé vers LangGraph en lecture seule |
 | `POST` | `/api/v1/writebacks/prepare` | Prépare une proposition HITL |
 | `POST` | `/api/v1/writebacks/{run_id}/approve` | Décision humaine ; écriture contrôlée si activée |
 
@@ -237,6 +290,7 @@ Voir le guide détaillé [docs/troubleshooting.md](docs/troubleshooting.md).
 - [Plan et rollback](docs/remediation-and-rollback.md)
 - [Double jugement](docs/double-judging.md)
 - [Write-back HITL](docs/hitl-writeback.md)
+- [Assistant Agentic RAG + MCP](docs/agentic-rag.md)
 - [Jeu de données et rapport d'évaluation](evals/README.md)
 - [Rapport final d'évaluation offline](evals/reports/final-evaluation.md)
 - [Vérifications locales reproductibles](evals/reports/local-validation-2026-07-20.md)

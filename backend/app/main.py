@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.analysis import router as analysis_router
+from app.api.v1.chat import router as chat_router
 from app.api.v1.datahub import router as datahub_router
 from app.api.v1.debate import router as debate_router
 from app.api.v1.health import router as health_router
@@ -40,3 +41,4 @@ app.include_router(debate_router, prefix="/api/v1")
 app.include_router(judging_router, prefix="/api/v1")
 app.include_router(writeback_router, prefix="/api/v1")
 app.include_router(workflow_router, prefix="/api/v1")
+app.include_router(chat_router, prefix="/api/v1")
