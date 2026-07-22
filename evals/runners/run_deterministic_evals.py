@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import argparse
 from collections import Counter
 from datetime import date
 from pathlib import Path
@@ -102,5 +103,12 @@ All 20 reference cases are structurally valid and cover: complete/no lineage, in
 
 
 if __name__ == "__main__":
-    REPORT.write_text(render(evaluate()), encoding="utf-8")
-    print(f"Wrote {REPORT.relative_to(ROOT)}")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--write-report", action="store_true", help="write the tracked baseline report")
+    args = parser.parse_args()
+    result = evaluate()
+    if args.write_report:
+        REPORT.write_text(render(result), encoding="utf-8")
+        print(f"Wrote {REPORT.relative_to(ROOT)}")
+    else:
+        print(json.dumps({"case_count": result["case_count"], "types": result["types"]}, default=dict, indent=2))

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -437,6 +437,24 @@ class RagCitation(BaseModel):
     score: float | None = None
 
 
+class AgentEvidence(BaseModel):
+    """A compact, user-visible fact returned by an allowlisted MCP tool."""
+
+    id: str
+    kind: Literal["search", "schema", "lineage"]
+    asset_urn: str
+    summary: str
+    facts: list[str] = Field(default_factory=list)
+
+
+class VerificationResult(BaseModel):
+    """Deterministic evidence-bound verification, not hidden chain-of-thought."""
+
+    passed: bool
+    checks: list[str] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)
+
+
 class ChatActionType(StrEnum):
     NONE = "NONE"
     ANALYZE_IMPACT = "ANALYZE_IMPACT"
@@ -470,6 +488,8 @@ class ChatResponse(BaseModel):
     verification_note: str
     action_proposal: ChatActionProposal
     agent_trace: list[AgenticTraceStep] = Field(default_factory=list)
+    evidence: list[AgentEvidence] = Field(default_factory=list)
+    verification: VerificationResult | None = None
 
 
 class ChatAnalysisRequest(BaseModel):

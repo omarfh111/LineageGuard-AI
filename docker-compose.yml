@@ -33,7 +33,9 @@ services:
       QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-lineageguard_datahub}
       RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-text-embedding-3-small}
+      RAG_EMBEDDING_PROVIDER: ${RAG_EMBEDDING_PROVIDER:-openai}
       RAG_MAX_ASSETS: ${RAG_MAX_ASSETS:-1500}
+      DEMO_MODE: ${DEMO_MODE:-false}
       OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-${OPENAI_JUDGE_MODEL:-}}
     depends_on:
       qdrant:

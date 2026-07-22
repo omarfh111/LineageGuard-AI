@@ -8,6 +8,9 @@ that contains no raw table data, secrets, SQL, or DataHub GraphQL payloads.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import math
+import re
 from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable
 from typing import Protocol
@@ -42,6 +45,28 @@ class OpenAIEmbeddingProvider:
         return [item.embedding for item in response.data]
 
 
+class DeterministicHashEmbeddingProvider:
+    """Offline-only embedding substitute for a transparent demo mode.
+
+    This has no semantic quality guarantee.  It exists so judges can exercise
+    ingestion, retrieval, MCP verification and HITL gates without registering
+    an external LLM account.  Production should use a real embedding model.
+    """
+
+    dimensions = 256
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return [self._embed(text) for text in texts]
+
+    def _embed(self, text: str) -> list[float]:
+        vector = [0.0] * self.dimensions
+        for token in re.findall(r"[a-z0-9_.-]+", text.lower()):
+            slot = int.from_bytes(hashlib.sha256(token.encode("utf-8")).digest()[:4], "big") % self.dimensions
+            vector[slot] += 1.0
+        magnitude = math.sqrt(sum(value * value for value in vector))
+        return [value / magnitude for value in vector] if magnitude else vector
+
+
 class QdrantMetadataIndex:
     def __init__(
         self,
@@ -51,7 +76,7 @@ class QdrantMetadataIndex:
     ) -> None:
         self._datahub = client
         self._settings = settings or get_settings()
-        self._embeddings = embeddings or OpenAIEmbeddingProvider(self._settings)
+        self._embeddings = embeddings or _embedding_provider(self._settings)
         self._qdrant = AsyncQdrantClient(url=self._settings.qdrant_url)
 
     async def ingest(self, progress: Callable[[int, int], Awaitable[None]]) -> int:
@@ -127,6 +152,15 @@ class QdrantMetadataIndex:
                 )
         return citations
 
+    async def _ensure_collection(self, vector_size: int) -> None:
+        if not await self._qdrant.collection_exists(self._settings.qdrant_collection):
+            await self._qdrant.create_collection(
+                collection_name=self._settings.qdrant_collection,
+                vectors_config=models.VectorParams(
+                    size=vector_size, distance=models.Distance.COSINE
+                ),
+            )
+
 
 async def persisted_index_status(settings: Settings | None = None) -> RagIndexStatus:
     """Discover an existing local collection after an API restart.
@@ -154,14 +188,6 @@ async def persisted_index_status(settings: Settings | None = None) -> RagIndexSt
         return RagIndexStatus(message="Qdrant index is unavailable.")
     finally:
         await client.close()
-
-    async def _ensure_collection(self, vector_size: int) -> None:
-        if not await self._qdrant.collection_exists(self._settings.qdrant_collection):
-            await self._qdrant.create_collection(
-                collection_name=self._settings.qdrant_collection,
-                vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE),
-            )
-
 
 class RagIndexCoordinator:
     """One bounded background ingestion job per process."""
@@ -208,6 +234,18 @@ def _document(urn: str, label: str, entity_type: str, platform_urn: str | None, 
             f"Platform: {platform_urn or 'unknown'}", f"Owners: {', '.join(owner_urns) or 'unknown'}",
         ]
     )
+
+
+def _embedding_provider(settings: Settings) -> EmbeddingProvider:
+    if settings.rag_embedding_provider == "local_hash" or (
+        settings.demo_mode and not settings.openai_api_key
+    ):
+        return DeterministicHashEmbeddingProvider()
+    if settings.rag_embedding_provider != "openai":
+        raise RagConfigurationError(
+            "RAG_EMBEDDING_PROVIDER must be 'openai' or 'local_hash'"
+        )
+    return OpenAIEmbeddingProvider(settings)
 
 
 rag_index_coordinator = RagIndexCoordinator()

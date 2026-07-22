@@ -1,5 +1,7 @@
 # LineageGuard AI
 
+English technical guide: [README.en.md](README.en.md).
+
 LineageGuard AI est une application de gouvernance de changements de schéma pour le track **Agents That Do Real Work** du hackathon *Build with DataHub*. Elle transforme une demande de changement en rapport d'impact fondé sur DataHub, plan déterministe, critique consultative NVIDIA, revue indépendante OpenAI + Groq et, seulement si les contrôles passent, proposition de write-back soumise à validation humaine.
 
 > Aucun LLM ne modifie DataHub, dbt, SQL ou un entrepôt. Toute écriture DataHub reste désactivée par défaut.
@@ -153,8 +155,6 @@ APP_ENV=development
 DATAHUB_GMS_URL=http://host.docker.internal:8080
 DATAHUB_WRITEBACK_ENABLED=false
 
-WORKER_LLM_PROVIDER=nvidia
-WORKER_LLM_MODEL=z-ai/glm-5.2
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 NVIDIA_API_KEY=...
 NVIDIA_CRITIC_MODEL=z-ai/glm-5.2
@@ -178,10 +178,6 @@ JUDGE_TEMPERATURE=0
 JUDGE_TIMEOUT_SECONDS=60
 JUDGE_MAX_RETRIES=1
 
-MAX_REPAIR_CYCLES=2
-MAX_LINEAGE_DEPTH=3
-MAX_IMPACTED_ASSETS=50
-HITL_REQUIRED_FOR_MUTATION=true
 VITE_API_BASE_URL=http://localhost:8000
 ```
 

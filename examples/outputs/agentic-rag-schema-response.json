@@ -1,0 +1,15 @@
+{
+  "example_type": "offline redacted fixture; not a live DataHub claim",
+  "question": "What columns are known for shop.orders?",
+  "answer": "The schema lookup returned order_id and customer_id. [E-schema-orders]",
+  "evidence": [
+    {
+      "id": "E-schema-orders",
+      "kind": "schema",
+      "asset_urn": "urn:li:dataset:(urn:li:dataPlatform:dbt,shop.orders,PROD)",
+      "summary": "DataHub schema lookup for shop.orders returned 2 fields.",
+      "facts": ["column=order_id, type=BIGINT", "column=customer_id, type=BIGINT"]
+    }
+  ],
+  "verification": {"passed": true, "issues": []}
+}

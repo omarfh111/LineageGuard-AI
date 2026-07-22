@@ -1,0 +1,31 @@
+{
+  "version": "agentic-rag-eval-v1",
+  "mode": "offline-fixture-baseline",
+  "cases": [
+    {
+      "id": "rag-schema-orders",
+      "expected": {"assets": ["urn:orders"], "schema_facts": ["column=order_id, type=BIGINT", "column=customer_id, type=BIGINT"], "lineage_facts": [], "tools": ["search", "list_schema_fields"]},
+      "observed": {"assets": ["urn:orders"], "schema_facts": ["column=order_id, type=BIGINT", "column=customer_id, type=BIGINT"], "lineage_facts": [], "tools": ["search", "list_schema_fields"], "claims": [{"supported": true}], "verification_passed": true, "latency_ms": 410, "estimated_cost_usd": 0.0}
+    },
+    {
+      "id": "rag-lineage-orders",
+      "expected": {"assets": ["urn:orders", "urn:orders-dashboard"], "schema_facts": [], "lineage_facts": ["downstream=urn:orders-dashboard, hops=1"], "tools": ["search", "get_lineage"]},
+      "observed": {"assets": ["urn:orders", "urn:orders-dashboard"], "schema_facts": [], "lineage_facts": ["downstream=urn:orders-dashboard, hops=1"], "tools": ["search", "get_lineage"], "claims": [{"supported": true}], "verification_passed": true, "latency_ms": 540, "estimated_cost_usd": 0.0}
+    },
+    {
+      "id": "rag-no-schema-proof",
+      "expected": {"assets": ["urn:orders"], "schema_facts": [], "lineage_facts": [], "tools": ["search", "list_schema_fields"]},
+      "observed": {"assets": ["urn:orders"], "schema_facts": [], "lineage_facts": [], "tools": ["search", "list_schema_fields"], "claims": [{"supported": false}], "verification_passed": false, "latency_ms": 460, "estimated_cost_usd": 0.0}
+    },
+    {
+      "id": "rag-no-lineage-proof",
+      "expected": {"assets": ["urn:orders"], "schema_facts": [], "lineage_facts": [], "tools": ["search", "get_lineage"]},
+      "observed": {"assets": ["urn:orders"], "schema_facts": [], "lineage_facts": [], "tools": ["search", "get_lineage"], "claims": [{"supported": false}], "verification_passed": false, "latency_ms": 490, "estimated_cost_usd": 0.0}
+    },
+    {
+      "id": "rag-catalog-lookup",
+      "expected": {"assets": ["urn:customers"], "schema_facts": [], "lineage_facts": [], "tools": ["search"]},
+      "observed": {"assets": ["urn:customers"], "schema_facts": [], "lineage_facts": [], "tools": ["search"], "claims": [{"supported": true}], "verification_passed": true, "latency_ms": 290, "estimated_cost_usd": 0.0}
+    }
+  ]
+}

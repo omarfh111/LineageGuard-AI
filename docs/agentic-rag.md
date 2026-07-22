@@ -1,18 +1,19 @@
 # Agentic RAG + DataHub MCP
 
-The assistant is a read-only, grounded interface over the local DataHub
+The assistant is a read-only, evidence-bound interface over the local DataHub
 catalog. It implements the following bounded architecture:
 
 ```mermaid
 flowchart TD
-    U[User question] --> P[Deterministic planner and safety router]
+    U[User question] --> P[Adaptive planner and safety router]
     P --> R[Qdrant retriever]
     P --> M[DataHub MCP live verification]
     R --> C[Grounded context]
     M --> C
-    C --> A[OpenAI answer model]
-    A --> V[Verification note and citations]
-    V --> F[Final answer]
+    C --> A[Reasoning model with evidence IDs]
+    A --> V[Evidence-bound verifier]
+    V -->|missing proof once| M
+    V -->|proof coverage passes| F[Final answer]
     P -->|schema change| W[Read-only LangGraph impact analysis]
     P -->|write request| H[Existing double-judge and HITL gate]
     H -->|explicit approval and enabled| D[DataHub document write-back]
@@ -26,7 +27,8 @@ SQL, secrets, GraphQL payloads or credentials into Qdrant. Vector retrieval is
 only a convenience layer; every answer also runs a current DataHub MCP search.
 
 Qdrant does **not** replace DataHub or mirror every aspect. With the showcase
-catalog, the controlled job indexed 1,188 discoverable assets. Their current
+catalog, the controlled job indexed 1,188 discoverable assets in one local
+run. Their current
 schemas, lineage paths, ownership and other aspects remain in DataHub and are
 read on demand through MCP. This keeps the vector database small and avoids
 stale copies of operational metadata.
@@ -36,15 +38,20 @@ stale copies of operational metadata.
 This is not a single retrieve-and-answer call. Each chat request runs a
 LangGraph state graph with an auditable public trace:
 
-1. **Planning agent** classifies the question and selects only allowed
-   read-only operations.
+1. **Planning agent** creates a compact JSON plan with a configured chat model
+   when one is available. It falls back visibly to deterministic keyword
+   classification only in no-key/demo mode.
 2. **RAG retriever** finds relevant metadata records in Qdrant.
 3. **MCP tool manager** runs DataHub `search` and, where relevant,
-   `list_schema_fields` and/or `get_lineage`. The MCP allowlist remains fixed.
-4. **Reasoning agent** creates a grounded answer from the RAG and live MCP
-   citations. It cannot execute tools or mutate DataHub.
-5. **Verification agent** checks that the returned answer has citations and
-   clearly states whether live MCP found a direct match.
+   `list_schema_fields` and/or `get_lineage`. It converts tool output into
+   evidence records: exact schema field/type facts and observed lineage edges.
+   The MCP allowlist remains fixed.
+4. **Reasoning agent** creates a grounded answer from the RAG candidates and
+   live MCP facts. Schema and lineage assertions must cite evidence IDs such as
+   `[E-schema-…]`; it cannot execute tools or mutate DataHub.
+5. **Verification agent** checks evidence presence, required schema/lineage
+   coverage and evidence-ID citations. It retries bounded read-only MCP tools
+   once, then returns a safe limitation instead of an unsupported conclusion.
 6. **Action router** either returns the answer, offers the read-only impact
    workflow, or directs a write request to the separate HITL gate.
 
@@ -61,7 +68,9 @@ private chain-of-thought, only the public actions and evidence used.
 The initial embedding pass uses the configured embedding provider and may incur
 provider cost. It is deliberately manual and is never started by Docker, tests,
 or a page refresh. Re-running it upserts deterministic IDs, so it does not
-duplicate indexed assets.
+duplicate indexed assets. `DEMO_MODE=true` with
+`RAG_EMBEDDING_PROVIDER=local_hash` uses a deterministic local hash embedding
+for no-key demonstrations; it is intentionally not presented as semantic RAG.
 
 ## Safety router
 
@@ -73,20 +82,34 @@ duplicate indexed assets.
   The chat has no DataHub write tool and cannot bypass double independent judges,
   write-back configuration, or human approval.
 
-## Evaluation
+## Evaluation and metrics
 
 The offline evaluation suite includes deterministic tests for the complete
-agent trace, hybrid source merging, schema-tool routing, schema-change routing,
-and HITL write routing. Run it with:
+agent trace, hybrid source merging, schema evidence injection, evidence-bound
+verification, schema-change routing, and HITL write routing. Run it with:
 
 ```powershell
 Set-Location backend
 python -m pytest tests -q -p no:cacheprovider
 ```
 
-The current suite passes 46 tests, with 3 optional local integration tests
-skipped when their external services are not part of the test command. The
-frontend production check is `npm run check` from `frontend`.
+Run the reproducible Agentic RAG fixture metrics without changing tracked
+reports:
+
+```powershell
+python evals/runners/run_agentic_rag_evals.py
+```
+
+It measures asset and lineage precision/recall, schema exact match, tool
+selection accuracy, evidence citation coverage, unsupported-claim rate before
+and after the verifier, verification block rate, p95 latency, and estimated
+cost. The committed result is an **offline fixture baseline**, not a live model
+quality claim. Use `--write-report` only when deliberately refreshing it.
+
+For an explicitly approved local DataHub write proof, see
+[`live-writeback-proof.md`](live-writeback-proof.md). It creates and then
+supersedes one Analysis document and is skipped unless two confirmation
+environment variables are set.
 
 ## Configuration
 
@@ -94,6 +117,8 @@ frontend production check is `npm run check` from `frontend`.
 QDRANT_URL=http://qdrant:6333
 QDRANT_COLLECTION=lineageguard_datahub
 RAG_EMBEDDING_MODEL=text-embedding-3-small
+RAG_EMBEDDING_PROVIDER=openai
+DEMO_MODE=false
 RAG_MAX_ASSETS=1500
 OPENAI_CHAT_MODEL=gpt-4.1-mini
 ```

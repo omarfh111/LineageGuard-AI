@@ -7,7 +7,7 @@ const ForceGraph3D = lazy(() => import("react-force-graph-3d"));
 
 type ChangeType = "ADD_COLUMN" | "RENAME_COLUMN" | "CHANGE_COLUMN_TYPE" | "DROP_COLUMN";
 type ApiError = { detail?: string };
-type Health = { status: string; environment: string };
+type Health = { status: string; environment: string; datahub: "configured" | "not_configured"; llm_providers: "configured" | "partial" | "not_configured"; qdrant: "configured" | "not_configured"; demo_mode: boolean };
 type ImpactReport = Record<string, any>;
 type RemediationPlan = Record<string, any>;
 type Critique = { model: string; summary: string; confidence: number; issues: Array<{ severity: string; finding: string; evidence_ids: string[] }>; recommended_revisions: string[] };
@@ -20,7 +20,7 @@ type CatalogNode = { urn: string; label: string; entity_type: string; platform_u
 type CatalogEdge = { source_urn: string; target_urn: string; direction: string; hops: number };
 type CatalogGraph = { nodes: CatalogNode[]; edges: CatalogEdge[]; truncated: boolean };
 type RagStatus = { state: "IDLE" | "RUNNING" | "COMPLETED" | "FAILED"; indexed_assets: number; total_assets: number; message: string };
-type ChatReply = { answer: string; citations: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null; source: string; score?: number | null }>; verification_note: string; action_proposal: { action: "NONE" | "ANALYZE_IMPACT" | "HITL_WRITEBACK"; requires_confirmation: boolean; reason: string; required_fields: string[] }; agent_trace: Array<{ id: string; label: string; status: string; detail: string }> };
+type ChatReply = { answer: string; citations: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null; source: string; score?: number | null }>; verification_note: string; verification?: { passed: boolean; checks: string[]; issues: string[] } | null; evidence: Array<{ id: string; kind: string; asset_urn: string; summary: string; facts: string[] }>; action_proposal: { action: "NONE" | "ANALYZE_IMPACT" | "HITL_WRITEBACK"; requires_confirmation: boolean; reason: string; required_fields: string[] }; agent_trace: Array<{ id: string; label: string; status: string; detail: string }> };
 
 async function request<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, { method: body ? "POST" : "GET", headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });

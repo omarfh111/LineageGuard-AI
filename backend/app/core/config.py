@@ -35,8 +35,10 @@ class Settings:
     qdrant_url: str = "http://qdrant:6333"
     qdrant_collection: str = "lineageguard_datahub"
     rag_embedding_model: str = "text-embedding-3-small"
+    rag_embedding_provider: str = "openai"
     chat_model: str | None = None
     rag_max_assets: int = 1500
+    demo_mode: bool = False
 
 
 def get_settings() -> Settings:
@@ -69,8 +71,10 @@ def get_settings() -> Settings:
         qdrant_url=os.getenv("QDRANT_URL", "http://qdrant:6333").rstrip("/"),
         qdrant_collection=os.getenv("QDRANT_COLLECTION", "lineageguard_datahub"),
         rag_embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small"),
+        rag_embedding_provider=os.getenv("RAG_EMBEDDING_PROVIDER", "openai").strip().lower(),
         chat_model=os.getenv("OPENAI_CHAT_MODEL") or os.getenv("OPENAI_JUDGE_MODEL") or None,
         rag_max_assets=int(os.getenv("RAG_MAX_ASSETS", "1500")),
+        demo_mode=_enabled(os.getenv("DEMO_MODE", "false")),
     )
 
 

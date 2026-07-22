@@ -52,3 +52,12 @@ All 20 reference cases are structurally valid and cover: complete/no lineage, in
 - Current local DataHub sample metadata may not contain every business contract required to prove compatibility.
 - The only supported write-back is an approved analysis document; warehouse, dbt and schema mutations are deliberately out of scope.
 - A double PASS is necessary but never sufficient to bypass human approval.
+
+## Agentic RAG companion baseline
+
+The separate [Agentic RAG + MCP fixture baseline](agentic-rag-baseline.md)
+measures retrieval precision/recall, schema exact match, lineage coverage,
+tool selection, evidence citations, verifier blocking, latency and estimated
+cost. Its scores are offline fixture measurements only; a dated live benchmark
+with reviewed DataHub ground truth is still required before publishing any live
+quality claim.
