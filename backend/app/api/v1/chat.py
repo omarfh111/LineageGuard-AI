@@ -8,8 +8,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.config import get_settings
 from app.datahub.mcp_client import DataHubConfigurationError, DataHubMcpClient, get_datahub_client
-from app.domain.contracts import ChatAnalysisRequest, ChatRequest, ChatResponse, RagIndexStatus, WorkflowAnalysisExecution
+from app.domain.contracts import (
+    ChatAnalysisRequest,
+    ChatMemoryStatus,
+    ChatRequest,
+    ChatResponse,
+    RagIndexStatus,
+    WorkflowAnalysisExecution,
+)
 from app.services.chat_agent import ChatConfigurationError, HybridChatAgent
+from app.services.chat_memory import chat_memory_store
 from app.services.rag_index import (
     QdrantMetadataIndex,
     RagConfigurationError,
@@ -41,11 +49,31 @@ async def ingest_metadata(client: DataHubClientDependency) -> RagIndexStatus:
 @router.post("/query", response_model=ChatResponse)
 async def query(request: ChatRequest, client: DataHubClientDependency) -> ChatResponse:
     try:
-        return await HybridChatAgent(
+        agent = HybridChatAgent(
             client, QdrantMetadataIndex(client, get_settings()), get_settings()
-        ).respond(request)
+        )
+        agent.set_memory_context(chat_memory_store.context_for(request.session_id, request.memory_enabled))
+        response = await agent.respond(request)
+        memory = chat_memory_store.record_turn(
+            request.session_id, request.memory_enabled, request.message, response.answer
+        )
+        return response.model_copy(update={"memory": memory})
     except (RagConfigurationError, ChatConfigurationError, DataHubConfigurationError) as error:
         raise HTTPException(503, str(error)) from error
+
+
+@router.get("/memory/{session_id}", response_model=ChatMemoryStatus)
+async def memory_status(session_id: str) -> ChatMemoryStatus:
+    """Return memory metadata only; turn content is never exposed by this endpoint."""
+
+    return chat_memory_store.status(session_id)
+
+
+@router.delete("/memory/{session_id}", response_model=ChatMemoryStatus)
+async def clear_memory(session_id: str) -> ChatMemoryStatus:
+    """Explicitly erase the current browser session's stored conversation context."""
+
+    return chat_memory_store.clear(session_id)
 
 
 @router.post("/execute-analysis", response_model=WorkflowAnalysisExecution)

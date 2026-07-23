@@ -17,6 +17,7 @@ from app.services.writeback import (
     WritebackRepository,
     WritebackService,
 )
+from app.services.catalog_cache import catalog_cache
 
 router = APIRouter(prefix="/writebacks", tags=["writeback"])
 _service: WritebackService | None = None
@@ -87,7 +88,15 @@ async def approve(
     service: Annotated[WritebackService, Depends(get_writeback_service)],
 ) -> WritebackProposal:
     try:
-        return await service.decide(run_id, request)
+        proposal = await service.decide(run_id, request)
+        if proposal.status == "COMPLETED":
+            await catalog_cache.record_action(
+                proposal.target_asset_urn,
+                "ANALYSIS_DOCUMENT_WRITTEN",
+                f"Human-approved DataHub Analysis document created: {proposal.snapshot.get('document_urn', 'unknown URN')}.",
+            )
+            await catalog_cache.request_refresh("approved_analysis_document_writeback")
+        return proposal
     except WritebackError as error:
         raise HTTPException(422, str(error)) from error
 
@@ -99,6 +108,14 @@ async def rollback(
     service: Annotated[WritebackService, Depends(get_writeback_service)],
 ) -> WritebackProposal:
     try:
-        return await service.rollback(run_id, request)
+        proposal = await service.rollback(run_id, request)
+        if proposal.status == "ROLLED_BACK":
+            await catalog_cache.record_action(
+                proposal.target_asset_urn,
+                "ANALYSIS_DOCUMENT_SUPERSEDED",
+                f"Human-approved compensation completed for {proposal.snapshot.get('document_urn', 'unknown URN')}.",
+            )
+            await catalog_cache.request_refresh("analysis_document_compensation")
+        return proposal
     except WritebackError as error:
         raise HTTPException(422, str(error)) from error

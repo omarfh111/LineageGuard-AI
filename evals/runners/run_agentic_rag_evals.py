@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from math import ceil
+from math import ceil, log2
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -27,6 +27,22 @@ def _prf(expected: set[str], actual: set[str]) -> tuple[float, float, float]:
     recall = true_positive / len(expected) if expected else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     return precision, recall, f1
+
+
+def _ranking_metrics(expected: set[str], ranked: list[str], k: int = 6) -> tuple[float, float, float, float]:
+    """Return precision@k, recall@k, MRR and binary NDCG@k for one query."""
+
+    if not expected:
+        return 0.0, 0.0, 0.0, 0.0
+    top = ranked[:k]
+    hits = [item for item in top if item in expected]
+    precision = len(hits) / len(top) if top else 0.0
+    recall = len(hits) / len(expected)
+    first_rank = next((index + 1 for index, item in enumerate(top) if item in expected), None)
+    reciprocal_rank = 1 / first_rank if first_rank else 0.0
+    dcg = sum(1 / log2(index + 2) for index, item in enumerate(top) if item in expected)
+    ideal = sum(1 / log2(index + 2) for index in range(min(len(expected), k)))
+    return precision, recall, reciprocal_rank, dcg / ideal if ideal else 0.0
 
 
 def evaluate() -> dict[str, float | int]:
@@ -47,12 +63,24 @@ def evaluate() -> dict[str, float | int]:
     blocked_invalid_cases = 0
     latencies: list[float] = []
     costs: list[float] = []
+    retrieval_precisions: list[float] = []
+    retrieval_recalls: list[float] = []
+    reciprocal_ranks: list[float] = []
+    ndcgs: list[float] = []
 
     for case in cases:
         expected = case["expected"]
         observed = case["observed"]
         asset_expected.update(expected["assets"])
         asset_actual.update(observed["assets"])
+        if expected["assets"]:
+            precision_at_k, recall_at_k, reciprocal_rank, ndcg = _ranking_metrics(
+                set(expected["assets"]), observed.get("ranked_assets", observed["assets"])
+            )
+            retrieval_precisions.append(precision_at_k)
+            retrieval_recalls.append(recall_at_k)
+            reciprocal_ranks.append(reciprocal_rank)
+            ndcgs.append(ndcg)
         lineage_expected.update(expected["lineage_facts"])
         lineage_actual.update(observed["lineage_facts"])
         schema_scores.append(_prf(set(expected["schema_facts"]), set(observed["schema_facts"]))[2])
@@ -81,6 +109,10 @@ def evaluate() -> dict[str, float | int]:
         "case_count": len(cases),
         "asset_precision": round(asset_precision, 3),
         "asset_recall": round(asset_recall, 3),
+        "precision_at_6": round(mean(retrieval_precisions), 3),
+        "recall_at_6": round(mean(retrieval_recalls), 3),
+        "mean_reciprocal_rank_at_6": round(mean(reciprocal_ranks), 3),
+        "ndcg_at_6": round(mean(ndcgs), 3),
         "lineage_precision": round(lineage_precision, 3),
         "lineage_recall": round(lineage_recall, 3),
         "schema_exact_match": round(mean(schema_scores), 3),
@@ -107,7 +139,7 @@ Mode: offline committed fixtures — **not a live benchmark or provider-quality 
 |---|---:|
 {rows}
 
-The fixture includes positive schema/lineage cases and negative cases where no proof is returned. A verification block is expected for every negative case. To publish a live score, save a dated ground-truth file, pinned model/provider version, latency distribution, token/cost ledger, DataHub datapack version, and reviewer sign-off.
+The fixture includes positive schema/lineage cases and negative cases where no proof is returned. A verification block is expected for every negative case. `precision_at_6`, `recall_at_6`, MRR and NDCG are ranking metrics on fixture-labelled relevant assets. MMR is a reranking strategy rather than an accuracy metric; report its configured lambda and a separate diversity measure only after enabling an MMR retriever. To publish a live score, save a dated ground-truth file, pinned model/provider version, latency distribution, token/cost ledger, DataHub datapack version, and reviewer sign-off.
 """
 
 

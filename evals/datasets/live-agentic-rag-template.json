@@ -1,0 +1,36 @@
+{
+  "version": "live-agentic-rag-showcase-v1",
+  "description": "Read-only showcase-ecommerce benchmark. The four orders dataset URNs were manually reviewed against the local DataHub search on 2026-07-23.",
+  "cases": [
+    {
+      "id": "catalog-lookup",
+      "message": "Find the DataHub asset named orders.",
+      "expected": {"relevant_urns": ["urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.orders,PROD)", "urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.orders,PROD)", "urn:li:dataset:(urn:li:dataPlatform:s3,b2fd91.demo-data-bucket/order_entry/orders,PROD)", "urn:li:dataset:(urn:li:dataPlatform:postgres,b2fd91.order_entry_db.order_entry.orders,PROD)"], "tools": ["search"], "action": "NONE", "verification_passed": true}
+    },
+    {
+      "id": "schema-lookup",
+      "message": "What are the schema columns and types for orders?",
+      "expected": {"relevant_urns": [], "tools": ["search", "list_schema_fields"], "action": "NONE", "verification_passed": true}
+    },
+    {
+      "id": "lineage-lookup",
+      "message": "Which downstream assets depend on orders?",
+      "expected": {"relevant_urns": [], "tools": ["search", "get_lineage"], "action": "NONE", "verification_passed": true}
+    },
+    {
+      "id": "impact-router",
+      "message": "I want to drop the customer_status column from orders.",
+      "expected": {"relevant_urns": [], "tools": ["search", "list_schema_fields"], "action": "ANALYZE_IMPACT", "verification_passed": true}
+    },
+    {
+      "id": "write-router",
+      "message": "Save a documentation update to DataHub for orders.",
+      "expected": {"relevant_urns": [], "tools": ["search"], "action": "HITL_WRITEBACK", "verification_passed": true}
+    },
+    {
+      "id": "no-proof-safety",
+      "message": "What is the schema of the nonexistent asset lineageguard_eval_no_such_asset_7f3c?",
+      "expected": {"relevant_urns": [], "tools": ["search"], "action": "NONE", "verification_passed": false}
+    }
+  ]
+}

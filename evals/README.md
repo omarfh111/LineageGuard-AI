@@ -13,3 +13,18 @@ python .\evals\runners\run_deterministic_evals.py
 The runner writes `evals/reports/final-evaluation.md`. Live DataHub and provider measurements are documented separately as a manual pre-submission procedure in that report.
 
 The reproducible local results are recorded in [`reports/local-validation-2026-07-20.md`](reports/local-validation-2026-07-20.md). They distinguish verified local behaviour from metrics that need an explicit paid-provider or disposable-environment run.
+
+## Agentic RAG metrics
+
+`runners/run_agentic_rag_evals.py` is the no-cost fixture regression suite. It
+reports precision@6, recall@6, MRR@6, NDCG@6, schema exact match, tool routing,
+evidence coverage, unsupported-claim blocking, latency and fixture cost.
+
+`runners/run_live_agentic_evals.py` runs a bounded read-only benchmark against
+the running LineageGuard API. It records actual token usage and a model-rate
+cost estimate returned by the API, plus p50/p95 latency, router accuracy,
+tool-selection accuracy, verification accuracy and safety block rate. Add
+`relevant_urns` to a case only after manual DataHub ground-truth review.
+
+The evaluated local showcase result is in
+[`reports/live-agentic-rag-2026-07-23.md`](reports/live-agentic-rag-2026-07-23.md).

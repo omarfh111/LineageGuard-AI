@@ -60,6 +60,8 @@ revealing private chain-of-thought.
 ```mermaid
 flowchart TD
     Q[User question] --> P[Adaptive Planning Agent]
+    MEM[Bounded local conversation memory] --> P
+    MEM --> X
     P --> R[Qdrant RAG Retriever]
     P --> M[MCP Tool Manager]
     R --> X[Reasoning Agent]
@@ -68,7 +70,7 @@ flowchart TD
     V -->|missing evidence; one bounded retry| M
     V -->|verified| A[Grounded answer with evidence IDs]
     P -->|schema change request| W[Read-only impact workflow]
-    P -->|write request| H[Existing double-judge + HITL workflow]
+    P -->|write request| HITL[Existing double-judge + HITL workflow]
 ```
 
 | Agent | Responsibility | Safety boundary |
@@ -78,6 +80,7 @@ flowchart TD
 | MCP tool manager | Calls live DataHub `search`, `list_schema_fields`, and `get_lineage` when relevant | Fixed read-only allowlist and bounded result counts |
 | Reasoning agent | Produces a concise answer from source candidates and live evidence | Must cite evidence IDs for schema and lineage claims |
 | Verification agent | Checks evidence coverage and cited evidence IDs | Performs at most one bounded read retry; otherwise returns a safe limitation |
+| Conversation memory | Resolves references across a browser session | Local SQLite, bounded, expiring, user-clearable, and never treated as evidence |
 | Action router | Suggests impact analysis or HITL when requested | Chat has no write tool and cannot bypass existing gates |
 
 ### Data lifecycle and trust boundaries
@@ -243,6 +246,16 @@ QDRANT_COLLECTION=lineageguard_datahub
 RAG_EMBEDDING_PROVIDER=openai
 RAG_EMBEDDING_MODEL=text-embedding-3-small
 RAG_MAX_ASSETS=1500
+CHAT_MEMORY_ENABLED=true
+CHAT_MEMORY_MAX_TURNS=6
+CHAT_MEMORY_CONTEXT_CHARS=6000
+CHAT_MEMORY_TTL_HOURS=168
+
+CATALOG_AUTOLOAD=true
+CATALOG_REFRESH_SECONDS=60
+CATALOG_MAX_ASSETS=1500
+CATALOG_MAX_EDGES=5000
+CATALOG_LINEAGE_CONCURRENCY=8
 
 OPENAI_API_KEY=
 OPENAI_CHAT_MODEL=gpt-4.1-mini
@@ -273,11 +286,48 @@ ingestion, retrieval, MCP verification and HITL routing without creating an
 external account. It is intentionally **not** presented as a semantic-embedding
 quality result. Configure OpenAI embeddings for real semantic RAG.
 
+### Conversation memory and cost telemetry
+
+The chat creates a random browser-session ID and persists at most six final
+question/answer pairs in the local SQLite volume for seven days by default.
+It can be disabled per request and erased from the UI. It is context only: it
+helps resolve a follow-up such as “and what is its schema?”, but it never
+authorizes a tool call or counts as DataHub evidence. No API keys, raw MCP
+payloads, chain-of-thought, credentials or HITL approvals are stored.
+
+When an OpenAI chat model is used, each response also displays safe metering:
+model ID, aggregate planning-and-answer tokens, and a text-token cost estimate.
+The estimate is intentionally omitted for unknown model pricing rather than
+invented.
+
+### Server-side 3D catalog cache
+
+The 3D catalog begins loading when the **API server starts**, not when a user
+opens the web page. One in-memory cache is shared by every browser connected to
+that server instance. The UI only reads and displays the cache.
+
+- `CATALOG_AUTOLOAD=true` enables background startup loading.
+- `CATALOG_MAX_ASSETS` and `CATALOG_MAX_EDGES` bound resource use.
+- `CATALOG_LINEAGE_CONCURRENCY` limits parallel MCP lineage reads.
+- The server polls DataHub catalog identity every `CATALOG_REFRESH_SECONDS`.
+- A LineageGuard impact analysis, lineage expansion, approved write-back or
+  compensation immediately records a node action. Write-back also requests an
+  immediate graph refresh.
+- The catalog panel displays `RUNNING`, `READY`, `STALE`, or `FAILED`, counts,
+  update timestamp and refresh reason. Hover a 3D node for its metadata and
+  recent LineageGuard actions; click it for the complete activity list.
+
+DataHub Core is not configured here with push/webhook events. Therefore
+external schema or lineage changes are reflected on the next polling pass, or
+immediately when the user presses **Refresh from DataHub**.
+
 ## Demonstration script
 
-1. Load the DataHub showcase datapack and open the UI.
-2. Click **Display all DataHub (3D)** to load a bounded catalog projection.
-   The graph loads in the background and does not block the rest of the app.
+1. Start the LineageGuard server. It begins loading the bounded 3D catalog in
+   the background before any browser is opened.
+2. Open the UI and watch the catalog cache status become `READY`; no manual
+   catalog-load action is required. Hover a node to inspect its details and
+   recorded LineageGuard actions.
 3. Click **Index DataHub metadata** in the Agentic RAG panel. Wait for
    `COMPLETED`.
 4. Ask a schema or lineage question. Inspect the public agent trace, MCP
@@ -297,13 +347,17 @@ quality result. Configure OpenAI embeddings for real semantic RAG.
 | `GET` | `/api/v1/datahub/search` | Read-only DataHub search |
 | `GET` | `/api/v1/datahub/schema` | Read-only schema lookup |
 | `GET` | `/api/v1/datahub/lineage` | Bounded lineage lookup |
-| `GET` | `/api/v1/datahub/catalog/snapshot` | Bounded 3D catalog projection |
+| `GET` | `/api/v1/datahub/catalog/cache` | Server-loaded 3D graph and freshness state |
+| `POST` | `/api/v1/datahub/catalog/cache/refresh` | Non-blocking manual refresh request |
+| `GET` | `/api/v1/datahub/catalog/snapshot` | Legacy bounded page projection |
 | `POST` | `/api/v1/workflows/analyze` | DataHub impact analysis and deterministic plan |
 | `POST` | `/api/v1/workflows/critique` | Manual NVIDIA advisory critique |
 | `POST` | `/api/v1/workflows/judge` | Gate 0 and independent final judges |
 | `GET` | `/api/v1/chat/index/status` | Qdrant index status |
 | `POST` | `/api/v1/chat/index/ingest` | Controlled metadata-only ingestion |
 | `POST` | `/api/v1/chat/query` | Agentic RAG + live MCP verification |
+| `GET` | `/api/v1/chat/memory/{session_id}` | Safe session-memory status only |
+| `DELETE` | `/api/v1/chat/memory/{session_id}` | Erase the caller's local conversation memory |
 | `POST` | `/api/v1/chat/execute-analysis` | Explicit chat-to-impact handoff |
 | `POST` | `/api/v1/writebacks/prepare` | Prepare an HITL write proposal |
 | `POST` | `/api/v1/writebacks/{run_id}/approve` | Human decision; document write only if enabled |
@@ -323,7 +377,7 @@ Current local validation after the latest reliability changes:
 
 | Check | Result |
 |---|---:|
-| Backend tests | **49 passed** |
+| Backend tests | **53 passed** |
 | Opt-in integration tests | **4 skipped** by default |
 | Frontend `npm run check` | Passed |
 | Docker frontend endpoint | HTTP 200 |
@@ -373,6 +427,35 @@ reviewed DataHub ground truth, datapack version, provider/model version, token
 ledger, latency distribution and reviewer sign-off. See
 [evals/reports/agentic-rag-baseline.md](evals/reports/agentic-rag-baseline.md).
 
+### Live showcase evaluation
+
+The dated live benchmark uses six read-only scenarios against local
+showcase-ecommerce DataHub: catalog retrieval, schema and lineage questions,
+impact routing, write/HITL routing, and a nonexistent-asset safety case.
+
+| Category | Metric | Result |
+|---|---|---:|
+| Retrieval | Precision@6 | 0.667 |
+| Retrieval | Recall@6 / MRR@6 / NDCG@6 | 1.000 / 1.000 / 1.000 |
+| Agents | Router / tool / verification accuracy | 1.000 / 1.000 / 1.000 |
+| Safety | Unsupported-claim block rate | 1.000 |
+| Evidence | Verified-citation coverage | 1.000 |
+| Performance | Mean / p50 / p95 latency | 23.1 s / 19.5 s / 41.1 s |
+| Cost | Retained-run tokens / estimate | 8,406 / $0.004661 |
+
+`Precision@6 = 0.667` is expected for this strict ground truth: four manually
+reviewed `orders` datasets were returned among six citations. Recall and MRR
+show that all four were retrieved and that a relevant dataset ranked first; the
+two remaining citations were related metadata but were not counted as relevant
+datasets. The benchmark presently has one independently labelled retrieval
+query, so it is a local showcase result rather than a general quality claim.
+
+The report also records a security fix found by evaluation: a Qdrant candidate
+cannot be promoted to a schema or lineage tool target without a current
+DataHub MCP search match. See the
+[dated live evaluation report](evals/reports/live-agentic-rag-2026-07-23.md)
+for methodology, metric definitions, model cost assumptions and limitations.
+
 ## Live write-back proof
 
 The repository includes an explicit opt-in integration proof:
@@ -404,6 +487,11 @@ Detailed procedure: [docs/live-writeback-proof.md](docs/live-writeback-proof.md)
   into feature components before production use.
 - Qdrant is a convenience index, not a full DataHub mirror. Live MCP remains
   mandatory for current schema and lineage claims.
+- The current result-diversity metric is a transparent proxy. A true MMR
+  reranker is a future improvement and is not claimed by the benchmark.
+- Retrieval ranking metrics currently have one manually labelled showcase
+  question. A 20+ query cross-platform ground-truth set is needed before
+  comparing models or making broader quality claims.
 - Offline fixture metrics establish regression coverage, not live quality.
 - The local Compose stack has no production authentication, RBAC, secrets
   manager, high-availability database or hosted deployment profile.
@@ -419,6 +507,7 @@ Detailed procedure: [docs/live-writeback-proof.md](docs/live-writeback-proof.md)
 - [Live write-back proof](docs/live-writeback-proof.md)
 - [Deterministic evaluation report](evals/reports/final-evaluation.md)
 - [Agentic RAG evaluation report](evals/reports/agentic-rag-baseline.md)
+- [Live Agentic RAG evaluation report](evals/reports/live-agentic-rag-2026-07-23.md)
 
 ## License
 

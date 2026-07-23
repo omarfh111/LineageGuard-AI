@@ -87,6 +87,23 @@ class AnyCompletion:
         return f"Grounded metadata answer. [E1] [{schema.id}]"
 
 
+class NoMatchDataHub:
+    def __init__(self) -> None:
+        self.schema_calls: list[str] = []
+
+    async def search(self, query: str, num_results: int = 10, offset: int = 0) -> dict:
+        return {"structuredContent": {"searchResults": []}}
+
+    async def list_schema_fields(self, urn: str) -> dict:
+        self.schema_calls.append(urn)
+        return {"structuredContent": {"fields": []}}
+
+
+class SafeNoMatchCompletion:
+    async def answer(self, question: str, sources: list[RagCitation], evidence: list) -> str:
+        return "No live match was found."
+
+
 @pytest.mark.asyncio
 async def test_hybrid_chat_retrieves_then_verifies_with_datahub_mcp() -> None:
     response = await HybridChatAgent(
@@ -131,3 +148,14 @@ async def test_agentic_router_invokes_schema_tool_only_for_schema_question() -> 
     schema_evidence = next(item for item in response.evidence if item.kind == "schema")
     assert schema_evidence.facts == ["column=order_id"]
     assert response.verification and response.verification.passed
+
+
+@pytest.mark.asyncio
+async def test_agent_never_reads_schema_for_an_unverified_qdrant_candidate() -> None:
+    datahub = NoMatchDataHub()
+    response = await HybridChatAgent(
+        datahub, SchemaIndex(), completion=SafeNoMatchCompletion(), planner=KeywordPlanningProvider()  # type: ignore[arg-type]
+    ).respond(ChatRequest(message="Show the schema of a nonexistent asset"))
+
+    assert datahub.schema_calls == []
+    assert response.verification and not response.verification.passed

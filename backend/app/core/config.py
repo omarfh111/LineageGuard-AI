@@ -39,6 +39,15 @@ class Settings:
     chat_model: str | None = None
     rag_max_assets: int = 1500
     demo_mode: bool = False
+    catalog_autoload: bool = True
+    catalog_refresh_seconds: int = 60
+    catalog_max_assets: int = 1500
+    catalog_max_edges: int = 5000
+    catalog_lineage_concurrency: int = 8
+    chat_memory_enabled: bool = True
+    chat_memory_max_turns: int = 6
+    chat_memory_context_chars: int = 6000
+    chat_memory_ttl_hours: int = 168
 
 
 def get_settings() -> Settings:
@@ -75,6 +84,15 @@ def get_settings() -> Settings:
         chat_model=os.getenv("OPENAI_CHAT_MODEL") or os.getenv("OPENAI_JUDGE_MODEL") or None,
         rag_max_assets=int(os.getenv("RAG_MAX_ASSETS", "1500")),
         demo_mode=_enabled(os.getenv("DEMO_MODE", "false")),
+        catalog_autoload=_enabled(os.getenv("CATALOG_AUTOLOAD", "true")),
+        catalog_refresh_seconds=max(15, int(os.getenv("CATALOG_REFRESH_SECONDS", "60"))),
+        catalog_max_assets=max(1, int(os.getenv("CATALOG_MAX_ASSETS", "1500"))),
+        catalog_max_edges=max(1, int(os.getenv("CATALOG_MAX_EDGES", "5000"))),
+        catalog_lineage_concurrency=max(1, int(os.getenv("CATALOG_LINEAGE_CONCURRENCY", "8"))),
+        chat_memory_enabled=_enabled(os.getenv("CHAT_MEMORY_ENABLED", "true")),
+        chat_memory_max_turns=max(1, min(20, int(os.getenv("CHAT_MEMORY_MAX_TURNS", "6")))),
+        chat_memory_context_chars=max(1000, min(20000, int(os.getenv("CHAT_MEMORY_CONTEXT_CHARS", "6000")))),
+        chat_memory_ttl_hours=max(1, min(720, int(os.getenv("CHAT_MEMORY_TTL_HOURS", "168")))),
     )
 
 

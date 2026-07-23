@@ -392,6 +392,7 @@ class CatalogNode(BaseModel):
     platform_urn: str | None = None
     owner_urns: list[str] = Field(default_factory=list)
     degree: int | None = None
+    recent_actions: list["CatalogAction"] = Field(default_factory=list)
 
 
 class CatalogEdge(BaseModel):
@@ -409,6 +410,38 @@ class CatalogGraph(BaseModel):
     query: str | None = None
     max_hops: int | None = None
     truncated: bool = False
+
+
+class CatalogAction(BaseModel):
+    """A public, local LineageGuard activity associated with a catalog node."""
+
+    timestamp: datetime
+    action: str
+    detail: str
+
+
+class CatalogCacheState(StrEnum):
+    IDLE = "IDLE"
+    RUNNING = "RUNNING"
+    READY = "READY"
+    STALE = "STALE"
+    FAILED = "FAILED"
+
+
+class CatalogCacheStatus(BaseModel):
+    state: CatalogCacheState = CatalogCacheState.IDLE
+    loaded_assets: int = Field(default=0, ge=0)
+    loaded_edges: int = Field(default=0, ge=0)
+    message: str = "Catalog cache has not started."
+    last_updated_at: datetime | None = None
+    refresh_reason: str | None = None
+
+
+class CatalogCacheSnapshot(BaseModel):
+    """Server-side 3D catalog cache plus safe freshness metadata."""
+
+    status: CatalogCacheStatus
+    graph: CatalogGraph
 
 
 class RagIndexState(StrEnum):
@@ -480,6 +513,28 @@ class AgenticTraceStep(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=2, max_length=4000)
     max_sources: int = Field(default=6, ge=1, le=12)
+    session_id: str | None = Field(default=None, min_length=8, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
+    memory_enabled: bool = True
+
+
+class ChatMemoryStatus(BaseModel):
+    """Privacy-safe status of the bounded conversation memory."""
+
+    session_id: str | None = None
+    enabled: bool = False
+    message_count: int = Field(default=0, ge=0)
+    max_turns: int = Field(default=0, ge=0)
+    last_updated_at: datetime | None = None
+
+
+class ModelUsage(BaseModel):
+    """Safe provider metering for a single agentic chat run."""
+
+    model: str | None = None
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
 
 
 class ChatResponse(BaseModel):
@@ -490,6 +545,8 @@ class ChatResponse(BaseModel):
     agent_trace: list[AgenticTraceStep] = Field(default_factory=list)
     evidence: list[AgentEvidence] = Field(default_factory=list)
     verification: VerificationResult | None = None
+    memory: ChatMemoryStatus | None = None
+    model_usage: ModelUsage | None = None
 
 
 class ChatAnalysisRequest(BaseModel):

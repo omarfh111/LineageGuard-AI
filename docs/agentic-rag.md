@@ -6,6 +6,8 @@ catalog. It implements the following bounded architecture:
 ```mermaid
 flowchart TD
     U[User question] --> P[Adaptive planner and safety router]
+    H[Bounded local conversation memory] --> P
+    H --> A
     P --> R[Qdrant retriever]
     P --> M[DataHub MCP live verification]
     R --> C[Grounded context]
@@ -32,6 +34,24 @@ run. Their current
 schemas, lineage paths, ownership and other aspects remain in DataHub and are
 read on demand through MCP. This keeps the vector database small and avoids
 stale copies of operational metadata.
+
+## Conversation memory
+
+The chat has bounded, per-browser-session memory for follow-up questions such
+as “and what is its schema?”. It is stored locally in the application SQLite
+volume, not in Qdrant and not in DataHub.
+
+- The browser creates a random session identifier; it contains no account or personal identity.
+- At most `CHAT_MEMORY_MAX_TURNS` final question/answer pairs are retained.
+- Memory expires after `CHAT_MEMORY_TTL_HOURS` (seven days by default) and can
+  be erased immediately with **Effacer la mémoire** in the UI.
+- No API keys, raw MCP payloads, chain-of-thought, credentials, mutation
+  approvals or tool authority are stored.
+- Memory is context only: every DataHub claim still requires fresh MCP evidence
+  and the standard verification pass.
+
+Set `CHAT_MEMORY_ENABLED=false` to disable reading and recording. The user can
+also untick the memory control before sending a question.
 
 ## Executable agent graph
 
@@ -121,6 +141,10 @@ RAG_EMBEDDING_PROVIDER=openai
 DEMO_MODE=false
 RAG_MAX_ASSETS=1500
 OPENAI_CHAT_MODEL=gpt-4.1-mini
+CHAT_MEMORY_ENABLED=true
+CHAT_MEMORY_MAX_TURNS=6
+CHAT_MEMORY_CONTEXT_CHARS=6000
+CHAT_MEMORY_TTL_HOURS=168
 ```
 
 `QDRANT_URL` points to the Compose service by default. For a backend run outside

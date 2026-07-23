@@ -23,6 +23,7 @@ from app.domain.contracts import (
     ChatActionType,
     ChatRequest,
     ChatResponse,
+    ModelUsage,
     RagCitation,
     VerificationResult,
 )
@@ -32,6 +33,34 @@ from app.services.rag_index import QdrantMetadataIndex
 
 class ChatConfigurationError(RuntimeError):
     pass
+
+
+class UsageLedger:
+    """Aggregate public provider usage across planning and final-answer calls."""
+
+    def __init__(self) -> None:
+        self.model: str | None = None
+        self.input_tokens = 0
+        self.output_tokens = 0
+
+    def add(self, model: str, usage: Any) -> None:
+        if usage is None:
+            return
+        self.model = model
+        self.input_tokens += int(getattr(usage, "prompt_tokens", 0) or 0)
+        self.output_tokens += int(getattr(usage, "completion_tokens", 0) or 0)
+
+    def summary(self) -> ModelUsage | None:
+        if self.model is None:
+            return None
+        total = self.input_tokens + self.output_tokens
+        return ModelUsage(
+            model=self.model,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            total_tokens=total,
+            estimated_cost_usd=_estimate_openai_cost(self.model, self.input_tokens, self.output_tokens),
+        )
 
 
 class AgentPlan(BaseModel):
@@ -68,13 +97,18 @@ class AgenticChatState(TypedDict):
 
 
 class OpenAIChatCompletionProvider:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, usage_ledger: UsageLedger | None = None) -> None:
         if not settings.openai_api_key or not settings.chat_model:
             raise ChatConfigurationError(
                 "OPENAI_API_KEY and OPENAI_CHAT_MODEL are required unless DEMO_MODE=true"
             )
         self._client = AsyncOpenAI(api_key=settings.openai_api_key)
         self._model = settings.chat_model
+        self._memory_context = ""
+        self._usage_ledger = usage_ledger
+
+    def set_memory_context(self, context: str) -> None:
+        self._memory_context = context
 
     async def answer(
         self, question: str, sources: list[RagCitation], evidence: list[AgentEvidence]
@@ -104,12 +138,15 @@ class OpenAIChatCompletionProvider:
                 {
                     "role": "user",
                     "content": (
+                        f"Conversation memory (context only; not evidence):\n{self._memory_context or 'No prior conversation.'}\n\n"
                         f"Question: {question}\n\nCandidate assets:\n{asset_context}\n\n"
                         f"Live DataHub MCP evidence:\n{evidence_context}"
                     ),
                 },
             ],
         )
+        if self._usage_ledger:
+            self._usage_ledger.add(self._model, response.usage)
         return response.choices[0].message.content or "No grounded answer was generated."
 
 
@@ -130,11 +167,16 @@ class DemoChatCompletionProvider:
 class OpenAIPlanningProvider:
     """Adaptive planner with a deterministic fallback when structured output fails."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, usage_ledger: UsageLedger | None = None) -> None:
         if not settings.openai_api_key or not settings.chat_model:
             raise ChatConfigurationError("An OpenAI chat model is required for adaptive planning")
         self._client = AsyncOpenAI(api_key=settings.openai_api_key)
         self._model = settings.chat_model
+        self._memory_context = ""
+        self._usage_ledger = usage_ledger
+
+    def set_memory_context(self, context: str) -> None:
+        self._memory_context = context
 
     async def plan(self, question: str) -> AgentPlan:
         try:
@@ -152,9 +194,17 @@ class OpenAIPlanningProvider:
                             "when upstream/downstream/dependency/impact is requested. Never request writes."
                         ),
                     },
-                    {"role": "user", "content": question},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Conversation memory (only for resolving references):\n"
+                            f"{self._memory_context or 'No prior conversation.'}\n\nQuestion: {question}"
+                        ),
+                    },
                 ],
             )
+            if self._usage_ledger:
+                self._usage_ledger.add(self._model, response.usage)
             payload = json.loads(response.choices[0].message.content or "{}")
             return AgentPlan.model_validate(payload)
         except Exception:
@@ -193,13 +243,36 @@ class HybridChatAgent:
         self._datahub = datahub
         self._index = index
         self._settings = settings or get_settings()
-        self._completion = completion or _completion_provider(self._settings)
-        self._planner = planner or _planning_provider(self._settings)
+        self._usage_ledger = UsageLedger()
+        self._completion = completion or _completion_provider(self._settings, self._usage_ledger)
+        self._planner = planner or _planning_provider(self._settings, self._usage_ledger)
+        self._memory_context = ""
+        self._memory_turn_count = 0
         self._graph = self._build_graph()
+
+    def set_memory_context(self, turns: list[tuple[str, str]]) -> None:
+        """Attach bounded prior turns without treating them as verified evidence."""
+
+        self._memory_turn_count = len(turns)
+        self._memory_context = "\n".join(
+            f"User: {question}\nAssistant: {answer}" for question, answer in turns
+        )
+        for provider in (self._completion, self._planner):
+            setter = getattr(provider, "set_memory_context", None)
+            if callable(setter):
+                setter(self._memory_context)
 
     async def respond(self, request: ChatRequest) -> ChatResponse:
         state = await self._graph.ainvoke(
-            {"request": request, "trace": [], "tool_round": 0},
+            {
+                "request": request,
+                "trace": (
+                    [_trace("memory", "Conversation memory", "COMPLETED", f"Loaded {self._memory_turn_count} bounded prior turn(s) as non-evidence context.")]
+                    if self._memory_turn_count
+                    else []
+                ),
+                "tool_round": 0,
+            },
             {"run_name": "lineageguard-agentic-rag", "tags": ["agentic-rag", "read-only"]},
         )
         return ChatResponse(
@@ -210,6 +283,7 @@ class HybridChatAgent:
             agent_trace=state["trace"],
             evidence=state.get("evidence", []),
             verification=state.get("verification"),
+            model_usage=self._usage_ledger.summary(),
         )
 
     def _build_graph(self):
@@ -257,15 +331,13 @@ class HybridChatAgent:
         verified = _citations_from_graph(graph.nodes)
         evidence = _search_evidence(graph.nodes)
         tools = ["search"]
-        if not verified and state["retrieved"]:
-            fallback = state["retrieved"][0].label
-            fallback_graph = catalog_from_search(
-                await self._datahub.search(fallback, num_results=10), fallback
-            )
-            verified = _citations_from_graph(fallback_graph.nodes)
-            evidence = _search_evidence(fallback_graph.nodes)
-            tools.append("search:fallback_asset")
-        targets = (verified or state["retrieved"])[:2]
+        # Never transform a Qdrant candidate into a new DataHub lookup. An
+        # unrelated semantic candidate could otherwise become an accidental
+        # MCP tool target for a question about a nonexistent asset.
+        # Qdrant candidates are useful for search recovery, but are never safe
+        # tool targets on their own. Schema and lineage calls must be anchored
+        # to an asset that the current DataHub MCP search has confirmed.
+        targets = verified[:2]
         if plan.need_schema:
             for target in targets:
                 schema = await self._datahub.list_schema_fields(target.urn)
@@ -352,17 +424,17 @@ class HybridChatAgent:
         return "repair" if not verification.passed and state.get("tool_round", 0) < 2 else "complete"
 
 
-def _completion_provider(settings: Settings) -> ChatCompletionProvider:
+def _completion_provider(settings: Settings, usage_ledger: UsageLedger | None = None) -> ChatCompletionProvider:
     if settings.demo_mode and not settings.openai_api_key:
         return DemoChatCompletionProvider()
-    return OpenAIChatCompletionProvider(settings)
+    return OpenAIChatCompletionProvider(settings, usage_ledger)
 
 
-def _planning_provider(settings: Settings) -> PlanningProvider:
+def _planning_provider(settings: Settings, usage_ledger: UsageLedger | None = None) -> PlanningProvider:
     if settings.demo_mode and not settings.openai_api_key:
         return KeywordPlanningProvider()
     try:
-        return OpenAIPlanningProvider(settings)
+        return OpenAIPlanningProvider(settings, usage_ledger)
     except ChatConfigurationError:
         return KeywordPlanningProvider()
 
@@ -463,3 +535,23 @@ def _propose_action(message: str) -> ChatActionProposal:
 
 def _trace(step_id: str, label: str, status: str, detail: str) -> AgenticTraceStep:
     return AgenticTraceStep(id=step_id, label=label, status=status, detail=detail)
+
+
+def _estimate_openai_cost(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    """Estimate text-token cost for pinned economical evaluation models.
+
+    Rates are intentionally explicit and must be reviewed when changing the
+    model. Unknown models return ``None`` rather than inventing a price.
+    """
+
+    rates = {
+        "gpt-4.1-mini": (0.40, 1.60),
+        "gpt-4.1-mini-2025-04-14": (0.40, 1.60),
+        "gpt-4.1-nano": (0.10, 0.40),
+        "gpt-4.1-nano-2025-04-14": (0.10, 0.40),
+        "gpt-4o-mini": (0.15, 0.60),
+    }
+    rate = rates.get(model)
+    if rate is None:
+        return None
+    return round((input_tokens * rate[0] + output_tokens * rate[1]) / 1_000_000, 8)

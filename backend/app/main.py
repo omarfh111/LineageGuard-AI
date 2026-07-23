@@ -2,6 +2,7 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
 from app.api.v1.analysis import router as analysis_router
 from app.api.v1.chat import router as chat_router
@@ -13,8 +14,21 @@ from app.api.v1.remediation import router as remediation_router
 from app.api.v1.writeback import router as writeback_router
 from app.api.v1.workflow import router as workflow_router
 from app.core.config import configure_langsmith_tracing
+from app.services.catalog_cache import catalog_cache
 
 configure_langsmith_tracing()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Start the server-owned catalog loader without delaying API readiness."""
+
+    await catalog_cache.start()
+    try:
+        yield
+    finally:
+        await catalog_cache.stop()
+
 
 app = FastAPI(
     title="LineageGuard AI API",
@@ -23,6 +37,7 @@ app = FastAPI(
         "Evidence-backed DataHub impact analysis with independent judges and "
         "human-approved, auditable document write-back."
     ),
+    lifespan=lifespan,
 )
 
 app.add_middleware(

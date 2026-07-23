@@ -21,6 +21,7 @@ from app.services.impact_analysis import AnalysisInputError
 from app.services.metadata_investigator import MetadataInvestigationError
 from app.services.nvidia_critic import NvidiaConfigurationError, NvidiaCriticError
 from app.services.workflow_graph import LineageGuardWorkflow
+from app.services.catalog_cache import catalog_cache
 
 router = APIRouter(prefix="/workflows", tags=["workflow"])
 DataHubClientDependency = Annotated[DataHubMcpClient, Depends(get_datahub_client)]
@@ -36,7 +37,13 @@ def graph_definition() -> WorkflowVisualization:
 @router.post("/analyze", response_model=WorkflowAnalysisExecution)
 async def analyze(request: ChangeRequest, client: DataHubClientDependency) -> WorkflowAnalysisExecution:
     try:
-        return await LineageGuardWorkflow(client=client).analyze(request)
+        execution = await LineageGuardWorkflow(client=client).analyze(request)
+        await catalog_cache.record_action(
+            request.asset_urn,
+            "IMPACT_ANALYSIS_COMPLETED",
+            f"Read-only {request.change_type.value} impact analysis completed for column {request.column_name or 'not specified'}.",
+        )
+        return execution
     except DataHubConfigurationError as error:
         raise HTTPException(503, str(error)) from error
     except (AnalysisInputError, MetadataInvestigationError) as error:

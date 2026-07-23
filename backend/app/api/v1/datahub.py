@@ -12,8 +12,9 @@ from app.datahub.mcp_client import (
     DataHubMcpClient,
     get_datahub_client,
 )
-from app.domain.contracts import CatalogGraph
+from app.domain.contracts import CatalogCacheSnapshot, CatalogCacheStatus, CatalogGraph
 from app.services.catalog_graph import catalog_from_lineage, catalog_from_search, catalog_snapshot
+from app.services.catalog_cache import catalog_cache
 
 router = APIRouter(prefix="/datahub", tags=["datahub"])
 DataHubClientDependency = Annotated[DataHubMcpClient, Depends(get_datahub_client)]
@@ -98,7 +99,11 @@ async def expand_catalog(
 
     try:
         result = await client.get_lineage(asset_urn, direction, max_hops, max_results=100)
-        return catalog_from_lineage(result, asset_urn, direction, max_hops)
+        graph = catalog_from_lineage(result, asset_urn, direction, max_hops)
+        await catalog_cache.merge_observed_graph(
+            graph, asset_urn, f"LINEAGE_EXPANDED_{direction}"
+        )
+        return graph
     except DataHubConfigurationError as error:
         raise _service_unavailable(error) from error
 
@@ -118,3 +123,17 @@ async def full_catalog_snapshot(
         )
     except DataHubConfigurationError as error:
         raise _service_unavailable(error) from error
+
+
+@router.get("/catalog/cache", response_model=CatalogCacheSnapshot)
+async def cached_catalog_snapshot() -> CatalogCacheSnapshot:
+    """Return the server-loaded 3D graph; opening a browser never starts it."""
+
+    return await catalog_cache.snapshot()
+
+
+@router.post("/catalog/cache/refresh", response_model=CatalogCacheStatus)
+async def refresh_cached_catalog() -> CatalogCacheStatus:
+    """Request one coalesced background refresh without blocking the UI."""
+
+    return await catalog_cache.request_refresh("manual_catalog_refresh")
