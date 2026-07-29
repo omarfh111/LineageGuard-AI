@@ -17,6 +17,10 @@ from app.domain.contracts import (
     WorkflowAnalysisExecution,
 )
 from app.services.chat_agent import ChatConfigurationError, HybridChatAgent
+from app.services.chat_handoff import (
+    ChatHandoffError,
+    chat_handoff_store,
+)
 from app.services.chat_memory import chat_memory_store
 from app.services.rag_index import (
     QdrantMetadataIndex,
@@ -62,11 +66,34 @@ async def query(request: ChatRequest, client: DataHubClientDependency) -> ChatRe
             chat_memory_store.active_asset_for(request.session_id, request.memory_enabled),
         )
         response = await agent.respond(request)
+        handoff = None
+        resolution = response.target_resolution
+        if (
+            response.action_proposal.action == "ANALYZE_IMPACT"
+            and resolution is not None
+            and resolution.status == "RESOLVED"
+            and len(resolution.targets) == 1
+        ):
+            handoff = chat_handoff_store.issue(
+                request.session_id, resolution.targets[0]
+            )
+        elif request.session_id:
+            chat_handoff_store.clear_session(request.session_id)
         memory = chat_memory_store.record_turn(
             request.session_id, request.memory_enabled, request.message, response.answer,
             response.active_verified_asset,
         )
-        return response.model_copy(update={"memory": memory})
+        return response.model_copy(
+            update={
+                "memory": memory,
+                "analysis_handoff_id": (
+                    handoff.handoff_id if handoff is not None else None
+                ),
+                "analysis_handoff_expires_at": (
+                    handoff.expires_at if handoff is not None else None
+                ),
+            }
+        )
     except (RagConfigurationError, ChatConfigurationError, DataHubConfigurationError) as error:
         raise HTTPException(503, str(error)) from error
 
@@ -82,6 +109,7 @@ async def memory_status(session_id: str) -> ChatMemoryStatus:
 async def clear_memory(session_id: str) -> ChatMemoryStatus:
     """Explicitly erase the current browser session's stored conversation context."""
 
+    chat_handoff_store.clear_session(session_id)
     return chat_memory_store.clear(session_id)
 
 
@@ -94,6 +122,13 @@ async def execute_analysis(
     if not request.confirmed:
         raise HTTPException(422, "Set confirmed=true before the chat can run an impact analysis")
     try:
+        chat_handoff_store.authorize(
+            request.handoff_id,
+            request.session_id,
+            request.change_request.asset_urn,
+        )
         return await LineageGuardWorkflow(client=client).analyze(request.change_request)
+    except ChatHandoffError as error:
+        raise HTTPException(409, str(error)) from error
     except DataHubConfigurationError as error:
         raise HTTPException(503, str(error)) from error

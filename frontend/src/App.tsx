@@ -1,12 +1,24 @@
 import { FormEvent, Fragment, lazy, Suspense, useEffect, useMemo, useState } from "react";
 import "./styles.css";
 import "./ux.css";
+import {
+  buildChangeRequest,
+  createChatHandoff,
+  draftFromRequest,
+  hasRevisionChange,
+  isHandoffUsable,
+  requestFingerprint,
+  validateDraft,
+  type AnalysisDraft,
+  type ChangeRequestPayload,
+  type ChangeType,
+  type ChatAnalysisHandoff,
+} from "./analysisFlow";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const demoAsset = "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.orders,PROD)";
 const ForceGraph3D = lazy(() => import("react-force-graph-3d"));
 
-type ChangeType = "ADD_COLUMN" | "RENAME_COLUMN" | "CHANGE_COLUMN_TYPE" | "DROP_COLUMN";
 type ApiError = { detail?: string };
 type Health = { status: string; environment: string; datahub: "configured" | "not_configured"; llm_providers: "configured" | "partial" | "not_configured"; qdrant: "configured" | "not_configured"; demo_mode: boolean };
 type ImpactReport = Record<string, any>;
@@ -25,7 +37,7 @@ type CatalogCacheStatus = { state: "IDLE" | "RUNNING" | "READY" | "STALE" | "FAI
 type CatalogCacheSnapshot = { status: CatalogCacheStatus; graph: CatalogGraph };
 type RagStatus = { state: "IDLE" | "RUNNING" | "COMPLETED" | "FAILED"; indexed_assets: number; total_assets: number; message: string; query_available: boolean };
 type ChatMemory = { session_id?: string | null; enabled: boolean; message_count: number; max_turns: number; last_updated_at?: string | null };
-type ChatReply = { answer: string; citations: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null; source: string; score?: number | null }>; verification_note: string; verification?: { passed: boolean; checks: string[]; issues: string[] } | null; evidence: Array<{ id: string; kind: string; asset_urn: string; summary: string; facts: string[] }>; action_proposal: { action: "NONE" | "ANALYZE_IMPACT" | "HITL_WRITEBACK"; requires_confirmation: boolean; reason: string; required_fields: string[] }; target_resolution?: { status: "NOT_REQUIRED" | "RESOLVED" | "AMBIGUOUS" | "NOT_FOUND"; detail: string; targets: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null }> } | null; active_verified_asset?: { urn: string; label: string; entity_type: string; platform_urn?: string | null } | null; agent_trace: Array<{ id: string; label: string; status: string; detail: string }>; memory?: ChatMemory | null; model_usage?: { model?: string | null; input_tokens: number; output_tokens: number; total_tokens: number; estimated_cost_usd?: number | null } | null };
+type ChatReply = { answer: string; citations: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null; source: string; score?: number | null }>; verification_note: string; verification?: { passed: boolean; checks: string[]; issues: string[] } | null; evidence: Array<{ id: string; kind: string; asset_urn: string; summary: string; facts: string[] }>; action_proposal: { action: "NONE" | "ANALYZE_IMPACT" | "HITL_WRITEBACK"; requires_confirmation: boolean; reason: string; required_fields: string[] }; target_resolution?: { status: "NOT_REQUIRED" | "RESOLVED" | "AMBIGUOUS" | "NOT_FOUND"; detail: string; targets: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null }> } | null; active_verified_asset?: { urn: string; label: string; entity_type: string; platform_urn?: string | null } | null; analysis_handoff_id?: string | null; analysis_handoff_expires_at?: string | null; agent_trace: Array<{ id: string; label: string; status: string; detail: string }>; memory?: ChatMemory | null; model_usage?: { model?: string | null; input_tokens: number; output_tokens: number; total_tokens: number; estimated_cost_usd?: number | null } | null };
 
 async function request<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, { method: body ? "POST" : "GET", headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });
@@ -68,8 +80,14 @@ export default function App() {
   const [changeType, setChangeType] = useState<ChangeType>("ADD_COLUMN");
   const [columnName, setColumnName] = useState("lineageguard_demo_note");
   const [newValue, setNewValue] = useState("");
+  const [columnNullable, setColumnNullable] = useState(true);
+  const [typeChangeCompatible, setTypeChangeCompatible] = useState<boolean | null>(null);
   const [reason, setReason] = useState("Validation contrôlée de la démo LineageGuard.");
   const [depth, setDepth] = useState(2);
+  const [chatHandoff, setChatHandoff] = useState<ChatAnalysisHandoff | null>(null);
+  const [analysisFingerprint, setAnalysisFingerprint] = useState<string | null>(null);
+  const [revisionBaseline, setRevisionBaseline] = useState<string | null>(null);
+  const [revisionComment, setRevisionComment] = useState<string | null>(null);
   const [impact, setImpact] = useState<ImpactReport | null>(null);
   const [plan, setPlan] = useState<RemediationPlan | null>(null);
   const [analysisRunId, setAnalysisRunId] = useState<string | null>(null);
@@ -77,6 +95,7 @@ export default function App() {
   const [judging, setJudging] = useState<StoredJudging | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [writebackKey, setWritebackKey] = useState<string | null>(null);
+  const [decisionComment, setDecisionComment] = useState("");
   const [history, setHistory] = useState<RunSummary[]>([]);
   const [workflowGraph, setWorkflowGraph] = useState<WorkflowGraph | null>(null);
   const [catalogQuery, setCatalogQuery] = useState("");
@@ -132,7 +151,41 @@ export default function App() {
   }, [ragStatus?.state]);
 
   const changeNeedsValue = changeType === "RENAME_COLUMN" || changeType === "CHANGE_COLUMN_TYPE";
-  const payload = useMemo(() => ({ asset_urn: assetUrn.trim(), change_type: changeType, column_name: columnName.trim() || undefined, new_value: changeNeedsValue ? newValue.trim() : undefined, reason: reason.trim(), environment: "PRODUCTION", lineage_depth: depth, column_nullable: changeType === "ADD_COLUMN" ? true : undefined, type_change_compatible: changeType === "CHANGE_COLUMN_TYPE" ? false : undefined }), [assetUrn, changeType, columnName, newValue, reason, depth, changeNeedsValue]);
+  const draft = useMemo<AnalysisDraft>(() => ({
+    assetUrn,
+    changeType,
+    columnName,
+    newValue,
+    reason,
+    depth,
+    columnNullable,
+    typeChangeCompatible,
+  }), [assetUrn, changeType, columnName, newValue, reason, depth, columnNullable, typeChangeCompatible]);
+  const draftErrors = useMemo(() => validateDraft(draft), [draft]);
+  const payload = useMemo<ChangeRequestPayload | null>(
+    () => draftErrors.length === 0 ? buildChangeRequest(draft) : null,
+    [draft, draftErrors],
+  );
+  const currentFingerprint = payload ? requestFingerprint(payload) : null;
+  const revisionHasChanges = hasRevisionChange(revisionBaseline, payload);
+  useEffect(() => {
+    if (
+      analysisFingerprint !== null
+      && currentFingerprint !== analysisFingerprint
+    ) {
+      setImpact(null);
+      setPlan(null);
+      setAnalysisRunId(null);
+      setCritique(null);
+      setJudging(null);
+      setProposal(null);
+      setWritebackKey(null);
+      setAnalysisFingerprint(null);
+      setNotice(
+        "The change request was edited. Previous analysis and approvals were invalidated.",
+      );
+    }
+  }, [analysisFingerprint, currentFingerprint]);
   const catalogTypes = useMemo(() => [...new Set(catalogGraph?.nodes.map((node) => node.entity_type) ?? [])].sort(), [catalogGraph]);
   const catalogPlatforms = useMemo(() => [...new Set((catalogGraph?.nodes.map((node) => node.platform_urn).filter(Boolean) ?? []) as string[])].sort(), [catalogGraph]);
   const visibleCatalogNodes = useMemo(() => {
@@ -144,7 +197,7 @@ export default function App() {
     );
   }, [catalogGraph, catalogTypeFilter, catalogPlatformFilter, catalogSearchTerm]);
 
-  function resetAfterImpact() { setAnalysisRunId(null); setCritique(null); setJudging(null); setProposal(null); setWritebackKey(null); }
+  function resetAfterImpact() { setAnalysisRunId(null); setCritique(null); setJudging(null); setProposal(null); setWritebackKey(null); setDecisionComment(""); }
   function mergeCatalogGraph(next: CatalogGraph) {
     setCatalogGraph((current) => {
       if (!current) return next;
@@ -164,10 +217,39 @@ export default function App() {
   }
   async function refreshHistory() { try { setHistory(await request<RunSummary[]>("/api/v1/judges/history")); } catch { /* non-critical */ } }
   async function runImpact(event: FormEvent) {
-    event.preventDefault(); setBusy("impact"); setError(null); setNotice(null);
+    event.preventDefault();
+    if (!payload) {
+      setError(draftErrors[0] ?? "The change request is incomplete.");
+      return;
+    }
+    if (!revisionHasChanges) {
+      setError("Change at least one request field before submitting the revision.");
+      return;
+    }
+    const submittedPayload = payload;
+    const submittedHandoff = chatHandoff?.target.urn === submittedPayload.asset_urn
+      ? chatHandoff
+      : null;
+    if (submittedHandoff && !isHandoffUsable(submittedHandoff)) {
+      setChatHandoff(null);
+      setError("The verified chat target expired. Resolve the asset again in the assistant.");
+      return;
+    }
+    setBusy("impact"); setError(null); setNotice(null);
     try {
-      const execution = await request<{ analysis_run_id: string; impact_report: ImpactReport; remediation_plan: RemediationPlan; graph: WorkflowGraph }>("/api/v1/workflows/analyze", payload);
+      const execution = submittedHandoff
+        ? await request<{ analysis_run_id: string; impact_report: ImpactReport; remediation_plan: RemediationPlan; graph: WorkflowGraph }>("/api/v1/chat/execute-analysis", {
+          change_request: submittedPayload,
+          confirmed: true,
+          handoff_id: submittedHandoff.handoffId,
+          session_id: chatSessionId,
+        })
+        : await request<{ analysis_run_id: string; impact_report: ImpactReport; remediation_plan: RemediationPlan; graph: WorkflowGraph }>("/api/v1/workflows/analyze", submittedPayload);
       resetAfterImpact(); setAnalysisRunId(execution.analysis_run_id); setImpact(execution.impact_report); setPlan(execution.remediation_plan); setWorkflowGraph(execution.graph);
+      setAnalysisFingerprint(requestFingerprint(submittedPayload));
+      setChatHandoff(null);
+      setRevisionBaseline(null);
+      setRevisionComment(null);
       setNotice("Impact et plan déterministe générés. Aucun LLM ni changement DataHub n’a été déclenché.");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Analyse impossible"); } finally { setBusy(null); }
   }
@@ -241,21 +323,36 @@ export default function App() {
   }
   async function askChat(event: FormEvent) {
     event.preventDefault(); if (!chatInput.trim()) return; setChatBusy("query"); setError(null);
-    try { const reply = await request<ChatReply>("/api/v1/chat/query", { message: chatInput.trim(), session_id: chatSessionId, memory_enabled: chatMemoryEnabled }); setChatReply(reply); setChatMemory(reply.memory ?? null); if (reply.action_proposal.action === "ANALYZE_IMPACT" && reply.target_resolution?.targets.length === 1) setAssetUrn(reply.target_resolution.targets[0].urn); }
+    try {
+      const reply = await request<ChatReply>("/api/v1/chat/query", { message: chatInput.trim(), session_id: chatSessionId, memory_enabled: chatMemoryEnabled });
+      setChatReply(reply);
+      setChatMemory(reply.memory ?? null);
+      setChatHandoff(createChatHandoff({
+        action: reply.action_proposal.action,
+        resolution: reply.target_resolution,
+        handoffId: reply.analysis_handoff_id,
+        expiresAt: reply.analysis_handoff_expires_at,
+      }));
+    }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Question impossible"); } finally { setChatBusy(null); }
   }
   async function clearChatMemory() {
     setChatBusy("memory-clear"); setError(null);
-    try { const memory = await deleteRequest<ChatMemory>(`/api/v1/chat/memory/${chatSessionId}`); setChatMemory(memory); setChatReply(null); setNotice("Mémoire de cette conversation effacée."); }
+    try { const memory = await deleteRequest<ChatMemory>(`/api/v1/chat/memory/${chatSessionId}`); setChatMemory(memory); setChatReply(null); setChatHandoff(null); setNotice("Mémoire de cette conversation effacée."); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Effacement de la mémoire impossible"); } finally { setChatBusy(null); }
   }
   async function runChatAnalysis() {
-    if (!window.confirm("Lancer l’analyse d’impact en lecture seule avec les champs du formulaire ?")) return;
-    setChatBusy("analysis"); setError(null);
-    try {
-      const execution = await request<{ analysis_run_id: string; impact_report: ImpactReport; remediation_plan: RemediationPlan; graph: WorkflowGraph }>("/api/v1/chat/execute-analysis", { change_request: payload, confirmed: true });
-      resetAfterImpact(); setAnalysisRunId(execution.analysis_run_id); setImpact(execution.impact_report); setPlan(execution.remediation_plan); setWorkflowGraph(execution.graph); setNotice("Analyse DataHub lancée depuis le chat : aucune écriture n’a été exécutée.");
-    } catch (caught) { setError(caught instanceof Error ? caught.message : "Analyse depuis le chat impossible"); } finally { setChatBusy(null); }
+    if (!isHandoffUsable(chatHandoff)) {
+      setChatHandoff(null);
+      setError("The verified target is missing or expired. Resolve the asset again.");
+      return;
+    }
+    setAssetUrn(chatHandoff.target.urn);
+    setError(null);
+    setNotice(
+      `Verified target ${chatHandoff.target.label} transferred to the analysis form. Complete the change details before running it.`,
+    );
+    navigate("analyse");
   }
   async function prepareWriteback() {
     if (!judging) return; setBusy("prepare"); setError(null);
@@ -263,9 +360,53 @@ export default function App() {
     catch (caught) { setError(caught instanceof Error ? caught.message : "Préparation impossible"); } finally { setBusy(null); }
   }
   async function decide(decision: "APPROVE_REPORT" | "REQUEST_REVISION" | "REJECT") {
-    if (!proposal || !writebackKey || (decision === "APPROVE_REPORT" && !window.confirm("Confirmer la demande d’écriture contrôlée dans DataHub ?"))) return;
+    const comment = decisionComment.trim();
+    if (!proposal || !writebackKey) return;
+    if (comment.length < 3) {
+      setError("Add a meaningful reviewer comment before recording the decision.");
+      return;
+    }
+    if (
+      decision === "APPROVE_REPORT"
+      && !window.confirm("Confirmer la demande d’écriture contrôlée dans DataHub ?")
+    ) return;
     setBusy("approval"); setError(null);
-    try { const result = await request<Proposal>(`/api/v1/writebacks/${proposal.run_id}/approve`, { decision, comment: "Décision prise depuis l’interface.", idempotency_key: writebackKey }); setProposal(result); setNotice(`Décision enregistrée : ${result.status}.`); }
+    try {
+      const result = await request<Proposal>(`/api/v1/writebacks/${proposal.run_id}/approve`, { decision, comment, idempotency_key: writebackKey });
+      setProposal(result);
+      setDecisionComment("");
+      if (
+        decision === "REQUEST_REVISION"
+        && result.status === "REVISION_REQUESTED"
+        && impact?.request
+      ) {
+        const reviewedRequest = impact.request as ChangeRequestPayload;
+        const restored = draftFromRequest(reviewedRequest);
+        setAssetUrn(restored.assetUrn);
+        setChangeType(restored.changeType);
+        setColumnName(restored.columnName);
+        setNewValue(restored.newValue);
+        setReason(restored.reason);
+        setDepth(restored.depth);
+        setColumnNullable(restored.columnNullable);
+        setTypeChangeCompatible(restored.typeChangeCompatible);
+        setRevisionBaseline(requestFingerprint(reviewedRequest));
+        setRevisionComment(comment);
+        setImpact(null);
+        setPlan(null);
+        setAnalysisRunId(null);
+        setCritique(null);
+        setJudging(null);
+        setProposal(null);
+        setWritebackKey(null);
+        setAnalysisFingerprint(null);
+        setChatHandoff(null);
+        setNotice("Revision opened. Change at least one request field, then run a fresh analysis and review.");
+        navigate("analyse");
+      } else {
+        setNotice(`Décision enregistrée : ${result.status}.`);
+      }
+    }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Décision impossible"); } finally { setBusy(null); }
   }
   async function rollbackWriteback() {
@@ -300,13 +441,79 @@ export default function App() {
     {workflowGraph && <section className="panel graph-panel"><div className="panel-heading"><div><p className="kicker">LangGraph</p><h2>Workflow dynamique</h2></div><span className={`badge ${workflowGraph.tracing_enabled ? "good" : "neutral"}`}>{workflowGraph.tracing_enabled ? "LangSmith actif" : "tracing désactivé"}</span></div><WorkflowDiagram graph={workflowGraph} /><p className="small">{workflowGraph.tracing_enabled ? `Traces dans ${workflowGraph.tracing_project ?? "le projet configuré"}.` : "Le tracing est opt-in et aucun secret n’est affiché."}</p></section>}
     <CatalogExplorer query={catalogQuery} onQuery={setCatalogQuery} onSearch={searchCatalog} onSnapshot={refreshServerCatalog} onLoadMore={loadMoreCatalog} hasMore={catalogHasMore} busy={catalogBusy} types={catalogTypes} platforms={catalogPlatforms} typeFilter={catalogTypeFilter} platformFilter={catalogPlatformFilter} onType={setCatalogTypeFilter} onPlatform={setCatalogPlatformFilter} graph={catalogGraph} nodes={visibleCatalogNodes} selected={selectedCatalogNode} onSelect={setSelectedCatalogNode} onExpand={expandCatalog} cache={catalogCache} />
     <ChatPanel status={ragStatus} reply={chatReply} input={chatInput} onInput={setChatInput} onIndex={startRagIndex} onAsk={askChat} onAnalyze={runChatAnalysis} busy={chatBusy} memory={chatMemory} memoryEnabled={chatMemoryEnabled} onMemoryEnabled={setChatMemoryEnabled} onClearMemory={clearChatMemory} />
-    <div className="layout"><section className="panel request-panel"><div className="panel-heading"><div><p className="kicker">Étape 1</p><h2>Demande de changement</h2></div><span className="readonly">Aucune mutation</span></div><form onSubmit={runImpact}><label>Actif DataHub<input value={assetUrn} onChange={(event) => setAssetUrn(event.target.value)} required /></label><div className="two-col"><label>Type de changement<select value={changeType} onChange={(event) => setChangeType(event.target.value as ChangeType)}><option value="ADD_COLUMN">Ajouter une colonne</option><option value="RENAME_COLUMN">Renommer une colonne</option><option value="CHANGE_COLUMN_TYPE">Changer le type</option><option value="DROP_COLUMN">Supprimer une colonne</option></select></label><label>Profondeur de lineage<select value={depth} onChange={(event) => setDepth(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} saut(s)</option>)}</select></label></div><div className="two-col"><label>Colonne<input value={columnName} onChange={(event) => setColumnName(event.target.value)} required={changeType !== "ADD_COLUMN"} /></label>{changeNeedsValue && <label>{changeType === "RENAME_COLUMN" ? "Nouveau nom" : "Nouveau type"}<input value={newValue} onChange={(event) => setNewValue(event.target.value)} required /></label>}</div><label>Justification<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={5} /></label><button className="primary" disabled={busy !== null}>{busy === "impact" ? "Analyse en cours…" : "Analyser l’impact et générer le plan"}</button></form></section><aside className="panel workflow"><p className="kicker">Contrôles</p><h2>Workflow gouverné</h2><div className="control"><span>DataHub MCP</span><b className="chip good">lecture seule</b></div><div className="control"><span>NVIDIA Build</span><b className="chip">consultatif</b></div><div className="control"><span>OpenAI + Groq</span><b className="chip warn">manuel</b></div><div className="control"><span>Write-back</span><b className="chip bad">HITL obligatoire</b></div></aside></div>
+    <div className="layout">
+      <section className="panel request-panel">
+        <div className="panel-heading"><div><p className="kicker">Étape 1</p><h2>Demande de changement</h2></div><span className="readonly">Aucune mutation</span></div>
+        {revisionComment && <div className="revision-callout"><b>Révision demandée</b><p>{revisionComment}</p><span>Modifiez au moins un champ. L’ancien rapport et ses approbations ne seront jamais réutilisés.</span></div>}
+        {chatHandoff && <div className="handoff-callout"><b>Cible vérifiée par DataHub MCP</b><p>{chatHandoff.target.label}</p><code>{chatHandoff.target.urn}</code><button type="button" className="text-button" onClick={() => setChatHandoff(null)}>Déverrouiller et saisir un autre actif</button></div>}
+        <form onSubmit={runImpact}>
+          <label>Actif DataHub
+            <input value={assetUrn} onChange={(event) => { setAssetUrn(event.target.value); setChatHandoff(null); }} readOnly={chatHandoff !== null} required />
+          </label>
+          <div className="two-col">
+            <label>Type de changement
+              <select value={changeType} onChange={(event) => setChangeType(event.target.value as ChangeType)}>
+                <option value="ADD_COLUMN">Ajouter une colonne</option>
+                <option value="RENAME_COLUMN">Renommer une colonne</option>
+                <option value="CHANGE_COLUMN_TYPE">Changer le type</option>
+                <option value="DROP_COLUMN">Supprimer une colonne</option>
+              </select>
+            </label>
+            <label>Profondeur de lineage
+              <select value={depth} onChange={(event) => setDepth(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} saut(s)</option>)}</select>
+            </label>
+          </div>
+          <div className="two-col">
+            <label>{changeType === "ADD_COLUMN" ? "Nouvelle colonne" : "Colonne existante"}
+              <input value={columnName} onChange={(event) => setColumnName(event.target.value)} required />
+            </label>
+            {changeNeedsValue && <label>{changeType === "RENAME_COLUMN" ? "Nouveau nom" : "Nouveau type"}
+              <input value={newValue} onChange={(event) => setNewValue(event.target.value)} required />
+            </label>}
+          </div>
+          {changeType === "ADD_COLUMN" && <label>Nullabilité proposée
+            <select value={columnNullable ? "true" : "false"} onChange={(event) => setColumnNullable(event.target.value === "true")}>
+              <option value="true">Nullable — compatible par défaut</option>
+              <option value="false">Non nullable — valeur par défaut requise</option>
+            </select>
+          </label>}
+          {changeType === "CHANGE_COLUMN_TYPE" && <label>Compatibilité connue
+            <select value={typeChangeCompatible === null ? "unknown" : String(typeChangeCompatible)} onChange={(event) => setTypeChangeCompatible(event.target.value === "unknown" ? null : event.target.value === "true")}>
+              <option value="unknown">À déterminer par l’analyse</option>
+              <option value="true">Compatible</option>
+              <option value="false">Incompatible</option>
+            </select>
+          </label>}
+          <label>Justification<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={5} /></label>
+          {draftErrors.length > 0 && <ul className="form-errors">{draftErrors.map((item) => <li key={item}>{item}</li>)}</ul>}
+          {!revisionHasChanges && <p className="small">La révision doit modifier au moins un champ du dossier examiné.</p>}
+          <button className="primary" disabled={busy !== null || draftErrors.length > 0 || !revisionHasChanges}>{busy === "impact" ? "Analyse en cours…" : revisionComment ? "Soumettre la nouvelle analyse" : "Analyser l’impact et générer le plan"}</button>
+        </form>
+      </section>
+      <aside className="panel workflow"><p className="kicker">Contrôles</p><h2>Workflow gouverné</h2><div className="control"><span>DataHub MCP</span><b className="chip good">lecture seule</b></div><div className="control"><span>NVIDIA Build</span><b className="chip">consultatif</b></div><div className="control"><span>OpenAI + Groq</span><b className="chip warn">manuel</b></div><div className="control"><span>Write-back</span><b className="chip bad">HITL obligatoire</b></div></aside>
+    </div>
     {impact && <section className="panel report"><div className="panel-heading"><div><p className="kicker">Étapes 2–3</p><h2>Rapport d’impact et plan</h2></div><span className={`badge ${statusTone(impact.risk_assessment.level)}`}>{impact.risk_assessment.level} · {impact.risk_assessment.score}/100</span></div><div className="metrics"><div><b>{impact.blast_radius}</b><span>actifs impactés</span></div><div><b>{impact.evidence_bundle.items.length}</b><span>preuves DataHub</span></div><div><b>{Math.round(impact.confidence * 100)}%</b><span>confiance</span></div></div><LineageDiagram source={impact.request.asset_urn} impacts={impact.impacted_assets} /><div className="split"><div><h3>Actifs et lineage</h3><ul className="asset-list">{impact.impacted_assets.slice(0, 8).map((item: any) => <li key={item.asset_urn}><code>{item.asset_urn}</code><span>{item.impact_type} · {item.criticality}</span></li>)}</ul></div><div><h3>Plan de remédiation</h3><ol>{plan?.migration_steps.map((step: any) => <li key={step.order}><b>{step.action}</b><span>{step.rationale}</span></li>)}</ol></div></div><details className="audit-details"><summary>Justification auditable</summary><ul>{impact.risk_assessment.explanation.map((line: string) => <li key={line}>{line}</li>)}</ul></details></section>}
     {plan && <section className="panel action-panel"><div><p className="kicker">Étape 4</p><h2>Critique NVIDIA Build</h2><p>Consultative : aucun changement automatique du plan.</p></div><button className="secondary" onClick={runCritique} disabled={busy !== null}>{busy === "critique" ? "Critique en cours…" : "Lancer la critique NVIDIA"}</button></section>}
     {critique && <section className="panel critique"><div className="panel-heading"><div><p className="kicker">Avis consultatif · {critique.model}</p><h2>Résultat NVIDIA</h2></div><span className="badge neutral">confiance {Math.round(critique.confidence * 100)}%</span></div><p>{critique.summary}</p>{critique.issues.map((issue, index) => <article className="issue" key={`${issue.finding}-${index}`}><b>{issue.severity}</b><p>{issue.finding}</p></article>)}</section>}
     {plan && <section className="panel action-panel"><div><p className="kicker">Étape 5 · action externe</p><h2>Revue finale indépendante</h2><p>OpenAI et Groq reçoivent le dossier conservé par le serveur sans voir le verdict de l’autre.</p></div><button className="primary" onClick={runJudges} disabled={busy !== null || !analysisRunId}>{busy === "judges" ? "Juges en cours…" : "Lancer OpenAI + Groq"}</button></section>}
     {judging && <section className="panel judges"><div className="panel-heading"><div><p className="kicker">Run serveur · {judging.run_id}</p><h2>Double revue</h2></div><span className={`badge ${statusTone(judging.result.aggregate_decision?.decision)}`}>{judging.result.aggregate_decision?.decision ?? "GATE 0"}</span></div>{!judging.result.deterministic_validation.passed && <div className="banner error">Gate 0 bloqué : {judging.result.deterministic_validation.errors.join(" · ")}</div>}<div className="judge-grid">{[judging.result.openai_verdict, judging.result.groq_verdict].map((verdict) => verdict && <JudgeCard key={verdict.judge_provider} verdict={verdict} />)}</div><p className="small"><b>Décision :</b> {judging.result.aggregate_decision?.rationale}</p>{judging.result.aggregate_decision?.decision === "FINALIZE_READ_ONLY" && <button className="secondary" onClick={prepareWriteback} disabled={busy !== null}>Préparer la proposition HITL</button>}</section>}
-    {proposal && <section className="panel approval"><div className="panel-heading"><div><p className="kicker">Étape 6 · HITL</p><h2>Proposition de write-back</h2></div><span className={`badge ${statusTone(proposal.status)}`}>{proposal.status}</span></div><p><b>Mutation autorisée :</b> {proposal.allowed_mutations.join(", ")}</p><details><summary>Document et snapshot</summary><pre>{proposal.document_content}</pre><pre>{JSON.stringify(proposal.snapshot, null, 2)}</pre></details><div className="approval-actions"><button className="primary" onClick={() => decide("APPROVE_REPORT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || !writebackKey}>Approuver l’écriture</button><button className="secondary" onClick={() => decide("REQUEST_REVISION")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || !writebackKey}>Demander une révision</button><button className="danger" onClick={() => decide("REJECT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || !writebackKey}>Rejeter</button>{proposal.status === "COMPLETED" && <button className="danger" onClick={rollbackWriteback} disabled={busy !== null || !writebackKey}>Approuver la compensation</button>}{proposal.status === "ROLLBACK_UNCERTAIN" && <button className="danger" onClick={rollbackWriteback} disabled={busy !== null || !writebackKey}>Réessayer la compensation idempotente</button>}{["WRITEBACK_UNCERTAIN", "FAILED"].includes(proposal.status) && <><button className="secondary" onClick={() => reconcileWriteback("ADOPT_COMPLETED_DOCUMENT")} disabled={busy !== null || !writebackKey}>Adopter le document vérifié</button><button className="danger" onClick={() => reconcileWriteback("CONFIRM_NO_DOCUMENT_CREATED")} disabled={busy !== null || !writebackKey}>Confirmer l’absence et réautoriser</button></>}</div>{!writebackKey && <p className="small">La clé d’approbation n’est jamais renvoyée par l’API. Rechargez le workflow depuis le début si cette session a été perdue.</p>}</section>}
+    {proposal && <section className="panel approval">
+      <div className="panel-heading"><div><p className="kicker">Étape 6 · HITL</p><h2>Proposition de write-back</h2></div><span className={`badge ${statusTone(proposal.status)}`}>{proposal.status}</span></div>
+      <p><b>Mutation autorisée :</b> {proposal.allowed_mutations.join(", ")}</p>
+      <details><summary>Document et snapshot</summary><pre>{proposal.document_content}</pre><pre>{JSON.stringify(proposal.snapshot, null, 2)}</pre></details>
+      {proposal.status === "PENDING_APPROVAL" && <label>Commentaire du reviewer
+        <textarea value={decisionComment} onChange={(event) => setDecisionComment(event.target.value)} minLength={3} placeholder="Justifiez l’approbation, la révision ou le rejet." />
+      </label>}
+      <div className="approval-actions">
+        <button className="primary" onClick={() => decide("APPROVE_REPORT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || !writebackKey || decisionComment.trim().length < 3}>Approuver l’écriture</button>
+        <button className="secondary" onClick={() => decide("REQUEST_REVISION")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || !writebackKey || decisionComment.trim().length < 3}>Demander une révision</button>
+        <button className="danger" onClick={() => decide("REJECT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || !writebackKey || decisionComment.trim().length < 3}>Rejeter</button>
+        {proposal.status === "COMPLETED" && <button className="danger" onClick={rollbackWriteback} disabled={busy !== null || !writebackKey}>Approuver la compensation</button>}
+        {proposal.status === "ROLLBACK_UNCERTAIN" && <button className="danger" onClick={rollbackWriteback} disabled={busy !== null || !writebackKey}>Réessayer la compensation idempotente</button>}
+        {["WRITEBACK_UNCERTAIN", "FAILED"].includes(proposal.status) && <><button className="secondary" onClick={() => reconcileWriteback("ADOPT_COMPLETED_DOCUMENT")} disabled={busy !== null || !writebackKey}>Adopter le document vérifié</button><button className="danger" onClick={() => reconcileWriteback("CONFIRM_NO_DOCUMENT_CREATED")} disabled={busy !== null || !writebackKey}>Confirmer l’absence et réautoriser</button></>}
+      </div>
+      {!writebackKey && <p className="small">La clé d’approbation n’est jamais renvoyée par l’API. Rechargez le workflow depuis le début si cette session a été perdue.</p>}
+    </section>}
     <section className="panel history"><p className="kicker">Historique</p><h2>Exécutions récentes</h2>{history.length ? <ul>{history.map((item) => <li key={item.run_id}><code>{item.run_id.slice(0, 8)}</code> · <b className={`badge ${statusTone(item.decision ?? undefined)}`}>{item.decision ?? "GATE 0"}</b> · OpenAI {item.openai_status ?? "—"} · Groq {item.groq_status ?? "—"}</li>)}</ul> : <p className="small">Aucune revue persistée.</p>}</section>
   </main>;
 }
@@ -345,7 +552,7 @@ function ChatPanel({ status, reply, input, onInput, onIndex, onAsk, onAnalyze, b
       <p className="chat-answer-text">{reply.answer}</p>
       <p className="small">{reply.verification_note}</p>
       <div className="chat-citations">{reply.citations.map((citation) => <code key={`${citation.source}-${citation.urn}`}>{citation.label} · {citation.entity_type} · {citation.source === "datahub_mcp_live" ? "preuve MCP vérifiée" : "contexte RAG"}</code>)}</div>
-      {reply.action_proposal.action !== "NONE" && <div className="chat-action"><b>Action proposée : {reply.action_proposal.action}</b><p>{reply.action_proposal.reason}</p>{reply.action_proposal.action === "ANALYZE_IMPACT" && <button className="secondary" onClick={onAnalyze} disabled={busy !== null || reply.target_resolution?.targets.length !== 1}>Confirmer l’analyse en lecture seule</button>}{reply.action_proposal.action === "HITL_WRITEBACK" && <p className="small">Aucune écriture n’est exécutée. Une proposition HITL reste obligatoire après double PASS.</p>}</div>}
+      {reply.action_proposal.action !== "NONE" && <div className="chat-action"><b>Action proposée : {reply.action_proposal.action}</b><p>{reply.action_proposal.reason}</p>{reply.action_proposal.action === "ANALYZE_IMPACT" && <button className="secondary" onClick={onAnalyze} disabled={busy !== null || !reply.analysis_handoff_id}>Utiliser cet actif vérifié dans l’analyse</button>}{reply.action_proposal.action === "HITL_WRITEBACK" && <p className="small">Aucune écriture n’est exécutée. Une proposition HITL reste obligatoire après double PASS.</p>}</div>}
       <details className="chat-technical"><summary>Détails techniques et traçabilité</summary><p className="small">{reply.model_usage ? `${reply.model_usage.model ?? "local"} · ${reply.model_usage.total_tokens} tokens · ${reply.model_usage.estimated_cost_usd == null ? "coût non estimé" : `$${reply.model_usage.estimated_cost_usd.toFixed(6)}`}` : "Aucune consommation de modèle signalée."}</p><div className="chat-trace">{reply.agent_trace.map((step, index) => <article key={`${step.id}-${index}`}><b>{step.label}</b><small>{step.status}</small><span>{step.detail}</span></article>)}</div></details>
     </div>}
   </section>;

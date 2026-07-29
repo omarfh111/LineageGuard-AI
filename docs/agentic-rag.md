@@ -92,6 +92,26 @@ flowchart TD
 
 The chat can launch only a confirmed **read-only** impact analysis. It cannot bypass Gate 0, independent judges, the feature flag, or human approval.
 
+For an impact request, the verified target is transferred with a 15-minute
+server-owned handoff bound to the browser session and exact MCP-resolved URN.
+The user completes the change type and column contract in the analysis form;
+the frontend never silently executes its default form values. Expired,
+cross-session, ambiguous, or asset-substituted handoffs fail closed. Starting a
+new target resolution or clearing conversation memory revokes the prior
+handoff.
+
+## Bounded provider latency
+
+Chat-path embeddings, adaptive planning, final answer generation, and each
+live MCP read independently use `CHAT_TIMEOUT_SECONDS` (15 seconds by
+default). If Qdrant query embedding is unavailable, the agent continues with
+live MCP only. If a planning or answer call fails, deterministic intent
+extraction or a bounded summary retains the original MCP evidence IDs. An MCP
+timeout returns a safe limitation and cannot create a target handoff.
+Verification still applies normally. The public trace labels these paths
+`LIMITED`, `deterministic_fallback`, or `deterministic_evidence_fallback`; a
+fallback is never presented as a model-generated response.
+
 ## Configuration
 
 ```env

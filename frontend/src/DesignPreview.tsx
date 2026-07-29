@@ -8,6 +8,16 @@ import "./motion-typography.css";
 import "./motion-fixes.css";
 import "./navigation-motion.css";
 import "./integration.css";
+import {
+  buildChangeRequest,
+  createChatHandoff,
+  isHandoffUsable,
+  requestFingerprint,
+  validateDraft,
+  type AnalysisDraft,
+  type ChangeType,
+  type ChatAnalysisHandoff,
+} from "./analysisFlow";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const ForceGraph3D = lazy(() => import("react-force-graph-3d"));
@@ -18,7 +28,7 @@ type CatalogNode = { urn: string; label: string; entity_type: string; platform_u
 type CatalogEdge = { source_urn: string; target_urn: string; direction: string; hops: number };
 type CatalogCache = { status: { state: string; loaded_assets: number; loaded_edges: number; message: string; last_updated_at?: string | null; refresh_reason?: string | null }; graph: { nodes: CatalogNode[]; edges: CatalogEdge[]; truncated: boolean } };
 type RagStatus = { state: string; indexed_assets: number; total_assets: number; message: string; query_available: boolean };
-type ChatReply = { answer: string; verification_note: string; citations: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null; source: string }>; target_resolution?: { status: string; detail: string; targets: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null }> } | null; verification?: { passed: boolean } | null; action_proposal: { action: string; reason: string }; agent_trace: Array<{ id: string; label: string; status: string; detail: string }> };
+type ChatReply = { answer: string; verification_note: string; citations: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null; source: string }>; target_resolution?: { status: "NOT_REQUIRED" | "RESOLVED" | "AMBIGUOUS" | "NOT_FOUND"; detail: string; targets: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null }> } | null; verification?: { passed: boolean } | null; action_proposal: { action: "NONE" | "ANALYZE_IMPACT" | "HITL_WRITEBACK"; reason: string }; analysis_handoff_id?: string | null; analysis_handoff_expires_at?: string | null; agent_trace: Array<{ id: string; label: string; status: string; detail: string }> };
 type WorkflowExecution = { impact_report: { blast_radius: number; confidence: number; risk_assessment: { level: string; score: number }; impacted_assets: Array<{ asset_urn: string; criticality: string }>; evidence_bundle: { items: unknown[] } }; remediation_plan: { migration_steps: Array<{ order: number; action: string; rationale: string }> } };
 type RunSummary = { run_id: string; decision: string | null; openai_status: string | null; groq_status: string | null };
 
@@ -52,6 +62,7 @@ export default function DesignPreview() {
   const [page, setPage] = useState<Page>(pageFromHash);
   const [loading, setLoading] = useState(true);
   const [health, setHealth] = useState<Health | null>(null);
+  const [analysisHandoff, setAnalysisHandoff] = useState<ChatAnalysisHandoff | null>(null);
 
   useEffect(() => {
     const load = () => request<Health>("/api/v1/health").then(setHealth).catch(() => setHealth(null));
@@ -77,8 +88,8 @@ export default function DesignPreview() {
       {page !== "Accueil" && <header className="preview-top"><div className="crumb"><span>Platform</span><b> / {page === "Workspace" ? "Advanced workspace" : page}</b></div><div className="top-actions"><button className="help" title="Use the acceptance plan for professional tests">?</button><div className={`online ${isHealthy ? "healthy" : ""}`}><i /> {isHealthy ? "Live services" : "Service check"}</div></div></header>}
       {page === "Accueil" && <AppleHome go={go} />}
       {page === "Cartographie" && <MapView />}
-      {page === "Assistant" && <AssistantView go={go} />}
-      {page === "Nouvelle analyse" && <AnalysisView go={go} />}
+      {page === "Assistant" && <AssistantView go={go} onAnalysisHandoff={(handoff) => { setAnalysisHandoff(handoff); go("Nouvelle analyse"); }} />}
+      {page === "Nouvelle analyse" && <AnalysisView go={go} handoff={analysisHandoff} onClearHandoff={() => setAnalysisHandoff(null)} />}
       {page === "Suivi" && <FollowUp go={go} />}
       {page === "Santé" && <HealthView health={health} />}
       {page === "Workspace" && <section className="workspace-route"><div className="page-heading"><div><p className="overline">GOVERNED OPERATIONS</p><h1>Advanced workspace</h1><p>Full evidence, independent review, audit, and human approval controls.</p></div></div><App /></section>}
@@ -126,7 +137,7 @@ function MapView() {
   </section>;
 }
 
-function AssistantView({ go }: { go: (page: Page) => void }) {
+function AssistantView({ go, onAnalysisHandoff }: { go: (page: Page) => void; onAnalysisHandoff: (handoff: ChatAnalysisHandoff) => void }) {
   const [status, setStatus] = useState<RagStatus | null>(null);
   const [message, setMessage] = useState("");
   const [reply, setReply] = useState<ChatReply | null>(null);
@@ -146,26 +157,126 @@ function AssistantView({ go }: { go: (page: Page) => void }) {
   async function index() { setBusy("index"); setError(null); try { setStatus(await request<RagStatus>("/api/v1/chat/index/ingest", {})); } catch (caught) { setError(caught instanceof Error ? caught.message : "Indexing unavailable"); } finally { setBusy(null); } }
   async function ask(event: FormEvent) { event.preventDefault(); if (!message.trim()) return; setBusy("query"); setError(null); try { setReply(await request<ChatReply>("/api/v1/chat/query", { message: message.trim(), session_id: sessionId, memory_enabled: memoryEnabled })); } catch (caught) { setError(caught instanceof Error ? caught.message : "Question unavailable"); } finally { setBusy(null); } }
   const outcome = reply?.action_proposal.action !== "NONE" ? "ACTION REQUIRED" : reply?.verification?.passed ? "VERIFIED" : reply ? "LIMITED" : null;
+  const handoff = reply ? createChatHandoff({
+    action: reply.action_proposal.action,
+    resolution: reply.target_resolution,
+    handoffId: reply.analysis_handoff_id,
+    expiresAt: reply.analysis_handoff_expires_at,
+  }) : null;
 
   return <section className="page-content assistant-screen integration-page"><div className="page-heading"><div><p className="overline">AGENTIC RAG + DATAHUB MCP</p><h1>Assistant</h1><p>Answers are verified against live DataHub evidence before they are presented as facts.</p></div><div className={`assistant-status ${ready ? "ready" : ""}`}><i /> {ready ? (status?.state === "RUNNING" ? "Chat ready · indexing" : "Index ready") : status?.state ?? "Index unavailable"}</div></div>
     <div className="assistant-board live-assistant"><div className="assistant-intro"><div className="assistant-mark">✦</div><h2>What do you want to understand?</h2><p>{status?.message ?? "Start controlled metadata indexing to enable the assistant."}</p><div className="suggestions"><button onClick={() => setMessage("Tell me about the orders dataset.")}>Tell me about orders</button><button onClick={() => setMessage("Show the downstream lineage of the orders dataset.")}>Show downstream lineage</button><button onClick={() => setMessage("What is the schema of the Snowflake orders dataset?")}>Inspect a schema</button></div><div className="assistant-controls"><button className="ghost" onClick={index} disabled={busy !== null || status?.state === "RUNNING"}>{status?.state === "RUNNING" ? "Indexing…" : "Index DataHub metadata"}</button><label><input type="checkbox" checked={memoryEnabled} onChange={(event) => setMemoryEnabled(event.target.checked)} /> Conversation memory</label></div></div>
       <form className="message-box live-message" onSubmit={ask}><span>✦</span><input value={message} onChange={(event) => setMessage(event.target.value)} disabled={!ready || busy !== null} placeholder={ready ? "Ask a question about DataHub…" : "Index metadata first"} /><button disabled={!ready || busy !== null}>{busy === "query" ? "…" : "↑"}</button></form>
       {error && <p className="integration-error">{error}</p>}
-      {reply && <article className="live-answer"><div className="answer-status"><b>{outcome}</b><span>{reply.verification_note}</span></div>{reply.target_resolution && <div className="target-resolution"><b>DataHub target</b><span>{reply.target_resolution.status}: {reply.target_resolution.detail}</span>{reply.target_resolution.targets.map((target) => <code key={target.urn}>{target.label} · {platformName(target.platform_urn)}<small>{target.urn}</small></code>)}</div>}<p>{reply.answer}</p><div className="evidence-tags">{reply.citations.map((citation) => <code key={`${citation.source}-${citation.urn}`}>{citation.label} · {citation.source === "datahub_mcp_live" ? "MCP verified" : "RAG context"}</code>)}</div>{reply.action_proposal.action !== "NONE" && <div className="action-callout"><b>{reply.action_proposal.action}</b><p>{reply.action_proposal.reason}</p>{reply.action_proposal.action === "ANALYZE_IMPACT" && <button className="cta" onClick={() => go("Nouvelle analyse")}>Prepare read-only analysis →</button>}{reply.action_proposal.action === "HITL_WRITEBACK" && <button className="ghost" onClick={() => go("Workspace")}>Open governed workspace →</button>}</div>}<details><summary>Public verification trace</summary>{reply.agent_trace.map((step) => <p key={`${step.id}-${step.detail}`}><b>{step.label}</b> · {step.status} · {step.detail}</p>)}</details></article>}</div>
+      {reply && <article className="live-answer"><div className="answer-status"><b>{outcome}</b><span>{reply.verification_note}</span></div>{reply.target_resolution && <div className="target-resolution"><b>DataHub target</b><span>{reply.target_resolution.status}: {reply.target_resolution.detail}</span>{reply.target_resolution.targets.map((target) => <code key={target.urn}>{target.label} · {platformName(target.platform_urn)}<small>{target.urn}</small></code>)}</div>}<p>{reply.answer}</p><div className="evidence-tags">{reply.citations.map((citation) => <code key={`${citation.source}-${citation.urn}`}>{citation.label} · {citation.source === "datahub_mcp_live" ? "MCP verified" : "RAG context"}</code>)}</div>{reply.action_proposal.action !== "NONE" && <div className="action-callout"><b>{reply.action_proposal.action}</b><p>{reply.action_proposal.reason}</p>{reply.action_proposal.action === "ANALYZE_IMPACT" && <><button className="cta" onClick={() => handoff && onAnalysisHandoff(handoff)} disabled={!isHandoffUsable(handoff)}>Use verified target in analysis →</button>{!handoff && <small>A live, unambiguous DataHub target is required before analysis.</small>}</>}{reply.action_proposal.action === "HITL_WRITEBACK" && <button className="ghost" onClick={() => go("Workspace")}>Open governed workspace →</button>}</div>}<details><summary>Public verification trace</summary>{reply.agent_trace.map((step) => <p key={`${step.id}-${step.detail}`}><b>{step.label}</b> · {step.status} · {step.detail}</p>)}</details></article>}</div>
   </section>;
 }
 
-function AnalysisView({ go }: { go: (page: Page) => void }) {
+function AnalysisView({ go, handoff, onClearHandoff }: {
+  go: (page: Page) => void;
+  handoff: ChatAnalysisHandoff | null;
+  onClearHandoff: () => void;
+}) {
   const [assetUrn, setAssetUrn] = useState("urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.orders,PROD)");
-  const [changeType, setChangeType] = useState("ADD_COLUMN");
+  const [changeType, setChangeType] = useState<ChangeType>("ADD_COLUMN");
   const [columnName, setColumnName] = useState("lineageguard_demo_note");
+  const [newValue, setNewValue] = useState("");
+  const [columnNullable, setColumnNullable] = useState(true);
+  const [typeChangeCompatible, setTypeChangeCompatible] = useState<boolean | null>(null);
   const [reason, setReason] = useState("Controlled LineageGuard analysis.");
+  const [depth, setDepth] = useState(2);
   const [execution, setExecution] = useState<WorkflowExecution | null>(null);
+  const [submittedFingerprint, setSubmittedFingerprint] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  async function analyze(event: FormEvent) { event.preventDefault(); setBusy(true); setError(null); try { setExecution(await request<WorkflowExecution>("/api/v1/workflows/analyze", { asset_urn: assetUrn.trim(), change_type: changeType, column_name: columnName.trim() || undefined, reason: reason.trim(), environment: "PRODUCTION", lineage_depth: 2, column_nullable: changeType === "ADD_COLUMN" })); } catch (caught) { setError(caught instanceof Error ? caught.message : "Analysis unavailable"); } finally { setBusy(false); } }
+  const sessionId = useMemo(chatSessionId, []);
+  const draft = useMemo<AnalysisDraft>(() => ({
+    assetUrn,
+    changeType,
+    columnName,
+    newValue,
+    reason,
+    depth,
+    columnNullable,
+    typeChangeCompatible,
+  }), [assetUrn, changeType, columnName, newValue, reason, depth, columnNullable, typeChangeCompatible]);
+  const errors = useMemo(() => validateDraft(draft), [draft]);
+  const payload = errors.length === 0 ? buildChangeRequest(draft) : null;
+  const fingerprint = payload ? requestFingerprint(payload) : null;
+
+  useEffect(() => {
+    if (!handoff) return;
+    if (!isHandoffUsable(handoff)) {
+      onClearHandoff();
+      setError("The verified chat target expired. Resolve the asset again in the assistant.");
+      return;
+    }
+    setAssetUrn(handoff.target.urn);
+    setExecution(null);
+    setSubmittedFingerprint(null);
+  }, [handoff]);
+
+  useEffect(() => {
+    if (submittedFingerprint !== null && fingerprint !== submittedFingerprint) {
+      setExecution(null);
+      setSubmittedFingerprint(null);
+    }
+  }, [fingerprint, submittedFingerprint]);
+
+  async function analyze(event: FormEvent) {
+    event.preventDefault();
+    if (!payload) {
+      setError(errors[0] ?? "Complete the change request.");
+      return;
+    }
+    if (handoff && (!isHandoffUsable(handoff) || handoff.target.urn !== payload.asset_urn)) {
+      onClearHandoff();
+      setError("The verified target is missing, expired, or does not match this request.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const result = handoff
+        ? await request<WorkflowExecution>("/api/v1/chat/execute-analysis", {
+          change_request: payload,
+          confirmed: true,
+          handoff_id: handoff.handoffId,
+          session_id: sessionId,
+        })
+        : await request<WorkflowExecution>("/api/v1/workflows/analyze", payload);
+      setExecution(result);
+      setSubmittedFingerprint(requestFingerprint(payload));
+      if (handoff) onClearHandoff();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Analysis unavailable");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const impact = execution?.impact_report;
-  return <section className="page-content integration-page"><div className="page-heading"><div><p className="overline">READ-ONLY IMPACT ANALYSIS</p><h1>New analysis</h1><p>Describe a change. LineageGuard reads DataHub and prepares a recommendation; it does not modify data.</p></div><span className="safe-badge">✓ No mutation</span></div><div className="analysis-grid"><form className="card form-card" onSubmit={analyze}><div className="step-number">01</div><h2>Your change</h2><label>DataHub asset URN<input value={assetUrn} onChange={(event) => setAssetUrn(event.target.value)} required /></label><label>Change type<select value={changeType} onChange={(event) => setChangeType(event.target.value)}><option value="ADD_COLUMN">Add a column</option><option value="RENAME_COLUMN">Rename a column</option><option value="CHANGE_COLUMN_TYPE">Change a column type</option><option value="DROP_COLUMN">Drop a column</option></select></label><label>Column name<input value={columnName} onChange={(event) => setColumnName(event.target.value)} required /></label><label>Reason<textarea value={reason} onChange={(event) => setReason(event.target.value)} required /></label><button className="cta wide" disabled={busy}>{busy ? "Reading DataHub…" : "Analyze impact →"}</button>{error && <p className="integration-error">{error}</p>}</form><aside className="analysis-side">{impact ? <section className="demo-result live-impact"><span>{impact.risk_assessment.level} · {impact.risk_assessment.score}/100</span><h3>{impact.blast_radius} assets may be affected</h3><p>{impact.evidence_bundle.items.length} DataHub evidence records support this read-only report.</p><ul>{impact.impacted_assets.slice(0, 4).map((item) => <li key={item.asset_urn}>{item.criticality} · {shortUrn(item.asset_urn)}</li>)}</ul><button className="ghost" onClick={() => go("Workspace")}>Open full review and HITL workflow →</button></section> : <section className="card guide-card"><div className="guide-icon">✦</div><h2>Simple and governed</h2><p>The system evaluates evidence and proposes steps. It never deploys a schema change.</p><div><span>1</span> Describe the change</div><div><span>2</span> Review the impact</div><div><span>3</span> Decide with evidence</div></section>}</aside></div>
+  const needsNewValue = changeType === "RENAME_COLUMN" || changeType === "CHANGE_COLUMN_TYPE";
+  return <section className="page-content integration-page">
+    <div className="page-heading"><div><p className="overline">READ-ONLY IMPACT ANALYSIS</p><h1>New analysis</h1><p>Describe a change. LineageGuard reads DataHub and prepares a recommendation; it does not modify data.</p></div><span className="safe-badge">✓ No mutation</span></div>
+    <div className="analysis-grid">
+      <form className="card form-card" onSubmit={analyze}>
+        <div className="step-number">01</div><h2>Your change</h2>
+        {handoff && <div className="verified-handoff"><b>MCP-verified target</b><span>{handoff.target.label}</span><code>{handoff.target.urn}</code><button type="button" className="ghost" onClick={onClearHandoff}>Choose another asset</button></div>}
+        <label>DataHub asset URN<input value={assetUrn} onChange={(event) => { setAssetUrn(event.target.value); if (handoff) onClearHandoff(); }} readOnly={handoff !== null} required /></label>
+        <label>Change type<select value={changeType} onChange={(event) => setChangeType(event.target.value as ChangeType)}><option value="ADD_COLUMN">Add a column</option><option value="RENAME_COLUMN">Rename a column</option><option value="CHANGE_COLUMN_TYPE">Change a column type</option><option value="DROP_COLUMN">Drop a column</option></select></label>
+        <label>{changeType === "ADD_COLUMN" ? "New column name" : "Existing column name"}<input value={columnName} onChange={(event) => setColumnName(event.target.value)} required /></label>
+        {needsNewValue && <label>{changeType === "RENAME_COLUMN" ? "New column name" : "New data type"}<input value={newValue} onChange={(event) => setNewValue(event.target.value)} required /></label>}
+        {changeType === "ADD_COLUMN" && <label>Nullability<select value={columnNullable ? "true" : "false"} onChange={(event) => setColumnNullable(event.target.value === "true")}><option value="true">Nullable</option><option value="false">Non-nullable</option></select></label>}
+        {changeType === "CHANGE_COLUMN_TYPE" && <label>Known compatibility<select value={typeChangeCompatible === null ? "unknown" : String(typeChangeCompatible)} onChange={(event) => setTypeChangeCompatible(event.target.value === "unknown" ? null : event.target.value === "true")}><option value="unknown">Determine during analysis</option><option value="true">Compatible</option><option value="false">Incompatible</option></select></label>}
+        <label>Lineage depth<select value={depth} onChange={(event) => setDepth(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} hop(s)</option>)}</select></label>
+        <label>Reason<textarea value={reason} onChange={(event) => setReason(event.target.value)} required /></label>
+        {errors.length > 0 && <ul className="integration-errors">{errors.map((item) => <li key={item}>{item}</li>)}</ul>}
+        <button className="cta wide" disabled={busy || errors.length > 0}>{busy ? "Reading DataHub…" : "Analyze impact →"}</button>
+        {error && <p className="integration-error">{error}</p>}
+      </form>
+      <aside className="analysis-side">{impact ? <section className="demo-result live-impact"><span>{impact.risk_assessment.level} · {impact.risk_assessment.score}/100</span><h3>{impact.blast_radius} assets may be affected</h3><p>{impact.evidence_bundle.items.length} DataHub evidence records support this read-only report.</p><ul>{impact.impacted_assets.slice(0, 4).map((item) => <li key={item.asset_urn}>{item.criticality} · {shortUrn(item.asset_urn)}</li>)}</ul><button className="ghost" onClick={() => go("Workspace")}>Open full review and HITL workflow →</button></section> : <section className="card guide-card"><div className="guide-icon">✦</div><h2>Simple and governed</h2><p>The system evaluates evidence and proposes steps. It never deploys a schema change.</p><div><span>1</span> Describe the change</div><div><span>2</span> Review the impact</div><div><span>3</span> Decide with evidence</div></section>}</aside>
+    </div>
   </section>;
 }
 

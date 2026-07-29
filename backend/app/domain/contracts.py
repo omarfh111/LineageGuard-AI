@@ -600,6 +600,8 @@ class ChatResponse(BaseModel):
     memory: ChatMemoryStatus | None = None
     target_resolution: ChatTargetResolution | None = None
     active_verified_asset: RagCitation | None = None
+    analysis_handoff_id: str | None = None
+    analysis_handoff_expires_at: datetime | None = None
     model_usage: ModelUsage | None = None
 
 
@@ -608,3 +610,7 @@ class ChatAnalysisRequest(BaseModel):
 
     change_request: ChangeRequest
     confirmed: bool = False
+    handoff_id: str = Field(min_length=16, max_length=100)
+    session_id: str = Field(
+        min_length=8, max_length=100, pattern=r"^[A-Za-z0-9_-]+$"
+    )

@@ -92,6 +92,17 @@ Example query:
 
 An index can be `RUNNING` while `query_available=true`: a prior Qdrant collection is usable and the chat should remain available during re-indexing.
 
+When an `ANALYZE_IMPACT` response resolves exactly one live MCP target, it also
+returns `analysis_handoff_id` and `analysis_handoff_expires_at`. The frontend
+must send that ID, the same `session_id`, and the exact resolved asset URN to
+`/chat/execute-analysis`. The server rejects expired, cross-session, or
+substituted targets with `409`. A newer resolution revokes the older handoff.
+
+The change form supports `ADD_COLUMN`, `RENAME_COLUMN`,
+`CHANGE_COLUMN_TYPE`, and `DROP_COLUMN`. Every type requires a column;
+rename/type changes additionally require `new_value`. Type-specific fields are
+not sent for unrelated change types.
+
 ## HITL document write-back
 
 | Method | Route | Rule |
@@ -116,6 +127,11 @@ adopts a document whose title and related asset are reverified through MCP, or
 records an explicit human confirmation that no document exists. Compensation
 operates only on the persisted document URN. See
 [Secure HITL write-back](hitl-writeback.md).
+
+`REQUEST_REVISION` closes the old proposal as `REVISION_REQUESTED`. The UI
+restores the exact reviewed request and reviewer comment, discards the old
+analysis/judge/write-back state, and requires at least one request change before
+a fresh analysis. The revised report must pass all gates again.
 
 ## HTTP behaviour
 

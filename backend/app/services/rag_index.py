@@ -39,9 +39,18 @@ class OpenAIEmbeddingProvider:
             raise RagConfigurationError("OPENAI_API_KEY is required for RAG embeddings")
         self._client = AsyncOpenAI(api_key=settings.openai_api_key)
         self._model = settings.rag_embedding_model
+        self._timeout = settings.chat_timeout_seconds
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        response = await self._client.embeddings.create(model=self._model, input=texts)
+        try:
+            response = await asyncio.wait_for(
+                self._client.embeddings.create(model=self._model, input=texts),
+                timeout=self._timeout,
+            )
+        except Exception as error:
+            raise RagConfigurationError(
+                "The optional RAG embedding provider did not answer within the configured time limit"
+            ) from error
         return [item.embedding for item in response.data]
 
 

@@ -1,7 +1,17 @@
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
-from app.domain.contracts import ChatActionType, ChatRequest, RagCitation
-from app.services.chat_agent import HybridChatAgent, KeywordPlanningProvider, _propose_action
+from app.core.config import Settings
+from app.domain.contracts import AgentEvidence, ChatActionType, ChatRequest, RagCitation
+from app.services.chat_agent import (
+    HybridChatAgent,
+    KeywordPlanningProvider,
+    OpenAIChatCompletionProvider,
+    OpenAIPlanningProvider,
+    _propose_action,
+)
 
 
 class FakeIndex:
@@ -101,6 +111,111 @@ class NoMatchDataHub:
 class SafeNoMatchCompletion:
     async def answer(self, question: str, sources: list[RagCitation], evidence: list) -> str:
         return "No live match was found."
+
+
+class SlowCompletions:
+    async def create(self, **_: object) -> object:
+        await asyncio.sleep(0.1)
+        raise AssertionError("The configured timeout should cancel this call")
+
+
+class UnavailableIndex:
+    async def retrieve(self, question: str, limit: int) -> list[RagCitation]:
+        raise RuntimeError("embedding provider unavailable")
+
+
+class SearchCompletion:
+    async def answer(self, question: str, sources: list[RagCitation], evidence: list) -> str:
+        return f"Verified live search result. [{evidence[0].id}]"
+
+
+class SlowSearchDataHub:
+    async def search(self, query: str, num_results: int = 10, offset: int = 0) -> dict:
+        await asyncio.sleep(0.1)
+        raise AssertionError("The configured MCP timeout should cancel this call")
+
+
+def chat_settings() -> Settings:
+    return Settings(
+        app_env="test",
+        database_url="sqlite://",
+        datahub_gms_url="http://datahub",
+        datahub_gms_token=None,
+        openai_api_key="test-key",
+        chat_model="test-model",
+        chat_timeout_seconds=0.01,  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.asyncio
+async def test_slow_chat_model_falls_back_to_named_mcp_evidence() -> None:
+    provider = OpenAIChatCompletionProvider(chat_settings())
+    provider._client = SimpleNamespace(  # type: ignore[assignment]
+        chat=SimpleNamespace(completions=SlowCompletions())
+    )
+    evidence = [
+        AgentEvidence(
+            id="E-lineage-orders",
+            kind="lineage",
+            asset_urn="urn:li:dataset:(urn:li:dataPlatform:dbt,shop.orders,PROD)",
+            summary="Verified downstream lineage for orders.",
+            facts=["downstream=orders_dashboard"],
+        )
+    ]
+
+    answer = await provider.answer("Show downstream lineage", [], evidence)
+
+    assert provider.last_mode == "deterministic_evidence_fallback"
+    assert "[E-lineage-orders]" in answer
+    assert "downstream=orders_dashboard" in answer
+
+
+@pytest.mark.asyncio
+async def test_slow_planner_uses_bounded_keyword_fallback() -> None:
+    provider = OpenAIPlanningProvider(chat_settings())
+    provider._client = SimpleNamespace(  # type: ignore[assignment]
+        chat=SimpleNamespace(completions=SlowCompletions())
+    )
+
+    plan = await provider.plan("Show the downstream lineage of orders")
+
+    assert provider.last_mode == "deterministic_fallback"
+    assert plan.search_terms == "orders"
+    assert plan.need_lineage
+
+
+@pytest.mark.asyncio
+async def test_unavailable_qdrant_retrieval_continues_with_live_mcp() -> None:
+    response = await HybridChatAgent(
+        FakeDataHub(),
+        UnavailableIndex(),
+        completion=SearchCompletion(),
+        planner=KeywordPlanningProvider(),
+    ).respond(ChatRequest(message="Tell me about orders"))
+
+    retriever = next(step for step in response.agent_trace if step.id == "retriever")
+    assert retriever.status == "LIMITED"
+    assert response.verification and response.verification.passed
+    assert response.citations[0].source == "datahub_mcp_live"
+
+
+@pytest.mark.asyncio
+async def test_slow_mcp_search_fails_closed_without_target_handoff() -> None:
+    response = await HybridChatAgent(
+        SlowSearchDataHub(),
+        SchemaIndex(),
+        settings=chat_settings(),
+        completion=SafeNoMatchCompletion(),
+        planner=KeywordPlanningProvider(),
+    ).respond(ChatRequest(message="Drop customer_status from orders"))
+
+    assert response.target_resolution
+    assert response.target_resolution.status == "NOT_FOUND"
+    assert response.target_resolution.targets == []
+    assert response.action_proposal.action == ChatActionType.ANALYZE_IMPACT
+    assert response.active_verified_asset is None
+    mcp = next(step for step in response.agent_trace if step.id == "mcp_tools")
+    assert mcp.status == "LIMITED"
 
 
 @pytest.mark.asyncio

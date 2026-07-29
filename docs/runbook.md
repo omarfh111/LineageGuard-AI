@@ -88,9 +88,18 @@ Do not expect the **Load 50 more assets** control when the cache already holds e
 3. Hover and select a node to show its URN, type, platform, owner count, and in-session actions.
 4. Index DataHub metadata in the RAG panel. After the first successful index, re-indexing remains non-blocking.
 5. Ask one schema or lineage question. Show the target-resolution card, MCP citations, and verification result.
-6. Submit a safe nullable `ADD_COLUMN` request. Show evidence, risk score, and non-executable plan.
-7. If external keys are intentionally enabled, run NVIDIA then the independent judges. Explain that `NEEDS_REPAIR`, `AWAITING_HUMAN`, and `BLOCKED` are safety outcomes, not application failures.
-8. Keep write-back disabled unless running the dedicated disposable write proof.
+6. Resolve an asset in chat and transfer the verified target to the analysis
+   form. Confirm that the URN is locked until explicitly unlocked.
+7. Exercise all four change contracts: nullable `ADD_COLUMN`, `RENAME_COLUMN`
+   with a distinct new name, `CHANGE_COLUMN_TYPE` with compatibility status,
+   and `DROP_COLUMN`. Show evidence, risk score, and `NOT_EXECUTED` plans.
+8. Edit one field after a completed analysis and confirm that the old report,
+   judges, and HITL proposal are invalidated.
+9. On a disposable proposal, enter reviewer feedback and select
+   `REQUEST_REVISION`. Confirm that unchanged resubmission is blocked and the
+   changed request restarts from analysis.
+10. If external keys are intentionally enabled, run NVIDIA then the independent judges. Explain that `NEEDS_REPAIR`, `AWAITING_HUMAN`, and `BLOCKED` are safety outcomes, not application failures.
+11. Keep write-back disabled unless running the dedicated disposable write proof.
 
 ## 7. Tracing and operational observability
 

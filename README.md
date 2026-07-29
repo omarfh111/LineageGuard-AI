@@ -9,8 +9,14 @@ The application never changes a warehouse schema, dbt model, lineage edge, dashb
 ## What it does
 
 - Builds a read-only, evidence-backed impact report for `ADD_COLUMN`, `RENAME_COLUMN`, `CHANGE_COLUMN_TYPE`, and `DROP_COLUMN` requests.
+- Carries a chat-resolved asset through a short-lived, server-owned handoff;
+  asset substitution, expired handoffs, and cross-session reuse are rejected.
+- Invalidates stale reports whenever the change form is edited and turns
+  `REQUEST_REVISION` into a fresh analysis/review cycle with mandatory feedback.
 - Produces deterministic risk scoring, remediation guidance, and a business rollback proposal marked `NOT_EXECUTED`.
 - Runs an Agentic RAG assistant: planning → Qdrant retrieval → live DataHub MCP reads → grounded response → deterministic verification.
+- Bounds optional chat-model calls and falls back to a cited, deterministic MCP
+  evidence summary when the provider is slow or unavailable.
 - Resolves exact DataHub targets before schema or lineage calls; ambiguous requests ask for a platform instead of guessing.
 - Shows the full bounded DataHub catalog as an interactive 3D graph, including platform colors, lineage edges, hover metadata, and in-session LineageGuard activity.
 - Uses optional NVIDIA advisory critique and independent OpenAI/Groq judges. No judge can call DataHub or write data.
@@ -36,6 +42,7 @@ flowchart LR
     API --> RAG["LangGraph Agentic RAG"]
     RAG --> QD["Qdrant metadata index"]
     RAG --> MCP
+    RAG -->|"verified target handoff"| Impact
 
     API --> Impact["Deterministic impact workflow"]
     Impact --> MCP
@@ -220,6 +227,7 @@ CHAT_MEMORY_TTL_HOURS=168
 
 OPENAI_API_KEY=
 OPENAI_CHAT_MODEL=gpt-4.1-mini
+CHAT_TIMEOUT_SECONDS=15
 OPENAI_JUDGE_MODEL=gpt-4.1-mini
 GROQ_API_KEY=
 GROQ_JUDGE_MODEL=openai/gpt-oss-20b
@@ -241,6 +249,17 @@ LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`, and `LANGCHAIN_ENDPOINT` are supported as compatibility aliases. The application normalizes them to LangSmith variables at startup.
 
 `WORKER_LLM_PROVIDER` and `WORKER_LLM_MODEL` are not application settings in the current implementation. The RAG planner/answer provider uses `OPENAI_CHAT_MODEL`; NVIDIA is currently the advisory critic, not the general chat provider.
+
+`CHAT_TIMEOUT_SECONDS` independently bounds chat-path embeddings, adaptive
+planning, answer generation, and each live MCP read. An embedding failure
+continues with MCP-only evidence; a model timeout returns a cited deterministic
+summary; an MCP timeout fails closed without authorizing a target handoff. The
+public agent trace records the exact fallback path.
+
+`CATALOG_LINEAGE_CONCURRENCY` is enforced inside the shared MCP session as
+well as in fallback traversal. This prevents the 3D background enrichment from
+starting an unbounded batch of DataHub GraphQL reads and starving interactive
+chat-to-analysis requests.
 
 ### No-key demonstration mode
 

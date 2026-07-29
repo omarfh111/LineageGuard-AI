@@ -90,8 +90,23 @@ class DataHubMcpClient:
             async with stdio_client(parameters) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
+                    # A catalog batch can contain 50 lineage reads. Starting
+                    # all of them at once overwhelms a local DataHub
+                    # Quickstart and starves interactive chat requests. The
+                    # configured catalog limit must also apply to the optimized
+                    # single-session path.
+                    semaphore = asyncio.Semaphore(
+                        max(1, self._settings.catalog_lineage_concurrency)
+                    )
+
+                    async def call_bounded(
+                        tool_name: str, arguments: Mapping[str, Any]
+                    ) -> Any:
+                        async with semaphore:
+                            return await session.call_tool(tool_name, dict(arguments))
+
                     results = await asyncio.gather(
-                        *(session.call_tool(tool_name, dict(arguments)) for tool_name, arguments in calls)
+                        *(call_bounded(tool_name, arguments) for tool_name, arguments in calls)
                     )
                     return [result.model_dump(mode="json") for result in results]
         except (OSError, BaseExceptionGroup) as error:

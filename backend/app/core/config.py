@@ -38,6 +38,7 @@ class Settings:
     rag_embedding_model: str = "text-embedding-3-small"
     rag_embedding_provider: str = "openai"
     chat_model: str | None = None
+    chat_timeout_seconds: int = 15
     rag_max_assets: int = 1500
     demo_mode: bool = False
     catalog_autoload: bool = True
@@ -86,6 +87,7 @@ def get_settings() -> Settings:
         rag_embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small"),
         rag_embedding_provider=os.getenv("RAG_EMBEDDING_PROVIDER", "openai").strip().lower(),
         chat_model=os.getenv("OPENAI_CHAT_MODEL") or os.getenv("OPENAI_JUDGE_MODEL") or None,
+        chat_timeout_seconds=max(5, min(120, int(os.getenv("CHAT_TIMEOUT_SECONDS", "15")))),
         rag_max_assets=int(os.getenv("RAG_MAX_ASSETS", "1500")),
         demo_mode=_enabled(os.getenv("DEMO_MODE", "false")),
         catalog_autoload=_enabled(os.getenv("CATALOG_AUTOLOAD", "true")),

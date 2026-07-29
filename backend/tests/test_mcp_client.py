@@ -1,5 +1,9 @@
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
+from app.datahub import mcp_client as mcp_client_module
 from app.core.config import Settings
 from app.datahub.mcp_client import DataHubConfigurationError, DataHubMcpClient
 
@@ -90,3 +94,60 @@ async def test_client_maps_downstream_lineage_to_the_mcp_upstream_flag() -> None
             "max_results": 100,
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_client_bounds_batch_concurrency_to_protect_interactive_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = 0
+    peak = 0
+
+    class FakeStdio:
+        async def __aenter__(self) -> tuple[object, object]:
+            return object(), object()
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    class FakeSession:
+        async def __aenter__(self) -> "FakeSession":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def initialize(self) -> None:
+            return None
+
+        async def call_tool(
+            self, tool_name: str, arguments: dict[str, object]
+        ) -> SimpleNamespace:
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return SimpleNamespace(
+                model_dump=lambda mode: {"tool": tool_name, "arguments": arguments}
+            )
+
+    session = FakeSession()
+    monkeypatch.setattr(mcp_client_module, "stdio_client", lambda parameters: FakeStdio())
+    monkeypatch.setattr(
+        mcp_client_module, "ClientSession", lambda read_stream, write_stream: session
+    )
+    client = DataHubMcpClient(
+        Settings(
+            app_env="test",
+            database_url="sqlite:///./test.db",
+            datahub_gms_url="http://localhost:8080",
+            datahub_gms_token=None,
+            catalog_lineage_concurrency=2,
+        )
+    )
+
+    results = await client.call_tools([("search", {"query": str(i)}) for i in range(7)])
+
+    assert len(results) == 7
+    assert peak == 2

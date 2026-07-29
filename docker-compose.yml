@@ -47,6 +47,7 @@ services:
       CHAT_MEMORY_TTL_HOURS: ${CHAT_MEMORY_TTL_HOURS:-168}
       DEMO_MODE: ${DEMO_MODE:-false}
       OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-${OPENAI_JUDGE_MODEL:-}}
+      CHAT_TIMEOUT_SECONDS: ${CHAT_TIMEOUT_SECONDS:-15}
     depends_on:
       qdrant:
         condition: service_healthy
