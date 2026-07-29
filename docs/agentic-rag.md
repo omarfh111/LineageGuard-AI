@@ -1,151 +1,136 @@
 # Agentic RAG + DataHub MCP
 
-The assistant is a read-only, evidence-bound interface over the local DataHub
-catalog. It implements the following bounded architecture:
+LineageGuard does not treat vector retrieval as proof. Qdrant narrows the search space; DataHub MCP supplies the live, authoritative evidence required for factual schema and lineage answers.
+
+## Design goals
+
+1. Answer useful catalog questions from a bounded metadata index.
+2. Verify DataHub claims against live MCP reads.
+3. Resolve and lock the intended asset before a schema or lineage tool call.
+4. Refuse safely when no target or proof exists.
+5. Route requested changes to the existing governed workflow rather than executing them from chat.
+
+## What is indexed
+
+Each Qdrant point is a metadata projection containing:
+
+- DataHub URN
+- display label
+- entity type
+- platform URN
+- owner URNs
+
+The index never stores table rows, SQL statements, credentials, tokens, raw GraphQL payloads, private chain-of-thought, or DataHub mutation permissions. It is a retrieval aid only.
+
+## Ingestion lifecycle
 
 ```mermaid
-flowchart TD
-    U[User question] --> P[Adaptive planner and safety router]
-    H[Bounded local conversation memory] --> P
-    H --> A
-    P --> R[Qdrant retriever]
-    P --> M[DataHub MCP live verification]
-    R --> C[Grounded context]
-    M --> C
-    C --> A[Reasoning model with evidence IDs]
-    A --> V[Evidence-bound verifier]
-    V -->|missing proof once| M
-    V -->|proof coverage passes| F[Final answer]
-    P -->|schema change| W[Read-only LangGraph impact analysis]
-    P -->|write request| H[Existing double-judge and HITL gate]
-    H -->|explicit approval and enabled| D[DataHub document write-back]
+flowchart LR
+    Start["User starts indexing"] --> Catalog["Read bounded DataHub catalog"]
+    Catalog --> Project["Create safe metadata projection"]
+    Project --> Embed["Embed or local-hash projection"]
+    Embed --> Upsert["Upsert deterministic Qdrant point"]
+    Upsert --> Ready["Index completed"]
 ```
 
-## What is stored
+The API never starts ingestion automatically. A user starts it from the UI or `POST /api/v1/chat/index/ingest`. Re-running ingestion upserts deterministic IDs and does not intentionally duplicate assets.
 
-The controlled ingestion job stores only a small metadata projection: asset URN,
-label, entity type, platform and owner URNs. It does **not** copy table rows,
-SQL, secrets, GraphQL payloads or credentials into Qdrant. Vector retrieval is
-only a convenience layer; every answer also runs a current DataHub MCP search.
+If a Qdrant collection already exists, `query_available=true` remains true during a refresh. The UI labels this `CHAT READY · INDEXING`; retrieval and MCP verification keep using the existing collection while the index is rebuilt.
 
-Qdrant does **not** replace DataHub or mirror every aspect. With the showcase
-catalog, the controlled job indexed 1,188 discoverable assets in one local
-run. Their current
-schemas, lineage paths, ownership and other aspects remain in DataHub and are
-read on demand through MCP. This keeps the vector database small and avoids
-stale copies of operational metadata.
+## Target resolution
+
+Before schema, lineage, or impact analysis, the tool manager resolves a target with these rules:
+
+| User signal | Resolution rule |
+|---|---|
+| Explicit DataHub URN | Use that URN directly after live validation |
+| Platform plus name, e.g. “Snowflake orders” | Select only an exact matching URN on that platform |
+| Pronoun, e.g. “its schema” | Use only the last non-ambiguous MCP-verified session target |
+| General catalog request | Multiple matches may be listed |
+| Ambiguous schema or lineage request | Ask the user for a platform; never select an arbitrary `orders` asset |
+| Nonexistent asset | Return `NOT_FOUND`; do not call schema or lineage tools on a similar real asset |
+
+Once an MCP match resolves a single target, retries are locked to that URN. A Qdrant-only result can never be promoted to a schema or lineage target.
+
+## Verification rules
+
+| Question type | Required live evidence |
+|---|---|
+| General catalog answer | At least one relevant MCP search evidence record |
+| Schema answer | `list_schema_fields` evidence belonging to the resolved target URN and cited in the answer |
+| Lineage answer | `get_lineage` evidence belonging to the resolved target URN and cited in the answer |
+| Change request | A resolved target before `ANALYZE_IMPACT` is proposed |
+| Write request | `HITL_WRITEBACK` proposal only; chat has no write tool |
+
+The verifier performs at most one bounded retry. If requirements still fail, it returns a safe limitation with status `LIMITED`. `COMPLETED` in a raw stage trace only means that a stage ran; the user-facing outcome is `VERIFIED`, `LIMITED`, or `ACTION_REQUIRED`.
 
 ## Conversation memory
 
-The chat has bounded, per-browser-session memory for follow-up questions such
-as “and what is its schema?”. It is stored locally in the application SQLite
-volume, not in Qdrant and not in DataHub.
+Memory is a local SQLite feature for conversational continuity, not a source of truth.
 
-- The browser creates a random session identifier; it contains no account or personal identity.
-- At most `CHAT_MEMORY_MAX_TURNS` final question/answer pairs are retained.
-- Memory expires after `CHAT_MEMORY_TTL_HOURS` (seven days by default) and can
-  be erased immediately with **Effacer la mémoire** in the UI.
-- No API keys, raw MCP payloads, chain-of-thought, credentials, mutation
-  approvals or tool authority are stored.
-- Memory is context only: every DataHub claim still requires fresh MCP evidence
-  and the standard verification pass.
+- Browser generates a random session ID without an account identity.
+- The default limit is six final question/answer turns.
+- Retention defaults to seven days and can be disabled per request.
+- **Clear memory** immediately removes retained turns for that session.
+- A separate active-asset record is saved only for one non-ambiguous MCP-verified asset.
+- Memory content cannot authorize a tool call and cannot satisfy verification.
 
-Set `CHAT_MEMORY_ENABLED=false` to disable reading and recording. The user can
-also untick the memory control before sending a question.
+For professional independent tests, use a new session or clear memory before each scenario. For normal product use, the six-turn limit is useful for follow-ups such as “What is its schema?”.
 
-## Executable agent graph
+## Action router
 
-This is not a single retrieve-and-answer call. Each chat request runs a
-LangGraph state graph with an auditable public trace:
-
-1. **Planning agent** creates a compact JSON plan with a configured chat model
-   when one is available. It falls back visibly to deterministic keyword
-   classification only in no-key/demo mode.
-2. **RAG retriever** finds relevant metadata records in Qdrant.
-3. **MCP tool manager** runs DataHub `search` and, where relevant,
-   `list_schema_fields` and/or `get_lineage`. It converts tool output into
-   evidence records: exact schema field/type facts and observed lineage edges.
-   The MCP allowlist remains fixed.
-4. **Reasoning agent** creates a grounded answer from the RAG candidates and
-   live MCP facts. Schema and lineage assertions must cite evidence IDs such as
-   `[E-schema-…]`; it cannot execute tools or mutate DataHub.
-5. **Verification agent** checks evidence presence, required schema/lineage
-   coverage and evidence-ID citations. It retries bounded read-only MCP tools
-   once, then returns a safe limitation instead of an unsupported conclusion.
-6. **Action router** either returns the answer, offers the read-only impact
-   workflow, or directs a write request to the separate HITL gate.
-
-The UI renders these five completed stages after each answer. It never shows
-private chain-of-thought, only the public actions and evidence used.
-
-## Starting the index
-
-1. Start DataHub, load the desired datapack, then start LineageGuard with Docker.
-2. In the UI, use **Indexer les metadonnees DataHub** and wait for `COMPLETED`.
-3. Ask a catalog or lineage question. Citations identify whether an item came
-   from Qdrant or was verified live through MCP.
-
-The initial embedding pass uses the configured embedding provider and may incur
-provider cost. It is deliberately manual and is never started by Docker, tests,
-or a page refresh. Re-running it upserts deterministic IDs, so it does not
-duplicate indexed assets. `DEMO_MODE=true` with
-`RAG_EMBEDDING_PROVIDER=local_hash` uses a deterministic local hash embedding
-for no-key demonstrations; it is intentionally not presented as semantic RAG.
-
-## Safety router
-
-- A normal question returns an answer with sources and performs no action.
-- A request that looks like a schema change proposes the existing **read-only**
-  LangGraph analysis. The user must explicitly confirm it and fill the normal
-  change-request form.
-- A request to publish, save or write proposes the existing HITL process only.
-  The chat has no DataHub write tool and cannot bypass double independent judges,
-  write-back configuration, or human approval.
-
-## Evaluation and metrics
-
-The offline evaluation suite includes deterministic tests for the complete
-agent trace, hybrid source merging, schema evidence injection, evidence-bound
-verification, schema-change routing, and HITL write routing. Run it with:
-
-```powershell
-Set-Location backend
-python -m pytest tests -q -p no:cacheprovider
+```mermaid
+flowchart TD
+    Question["User message"] --> Classify["Intent classifier"]
+    Classify -->|"catalog question"| Read["Agentic RAG + read-only MCP"]
+    Classify -->|"schema change"| Impact["ANALYZE_IMPACT proposal"]
+    Classify -->|"write / publish"| Hitl["HITL_WRITEBACK proposal"]
+    Read --> Verify["Evidence verification"]
+    Impact --> Confirm["Explicit user confirmation required"]
+    Hitl --> Gates["Existing double judge + human approval gates"]
 ```
 
-Run the reproducible Agentic RAG fixture metrics without changing tracked
-reports:
-
-```powershell
-python evals/runners/run_agentic_rag_evals.py
-```
-
-It measures asset and lineage precision/recall, schema exact match, tool
-selection accuracy, evidence citation coverage, unsupported-claim rate before
-and after the verifier, verification block rate, p95 latency, and estimated
-cost. The committed result is an **offline fixture baseline**, not a live model
-quality claim. Use `--write-report` only when deliberately refreshing it.
-
-For an explicitly approved local DataHub write proof, see
-[`live-writeback-proof.md`](live-writeback-proof.md). It creates and then
-supersedes one Analysis document and is skipped unless two confirmation
-environment variables are set.
+The chat can launch only a confirmed **read-only** impact analysis. It cannot bypass Gate 0, independent judges, the feature flag, or human approval.
 
 ## Configuration
 
 ```env
 QDRANT_URL=http://qdrant:6333
 QDRANT_COLLECTION=lineageguard_datahub
-RAG_EMBEDDING_MODEL=text-embedding-3-small
 RAG_EMBEDDING_PROVIDER=openai
-DEMO_MODE=false
+RAG_EMBEDDING_MODEL=text-embedding-3-small
 RAG_MAX_ASSETS=1500
+
+OPENAI_API_KEY=
 OPENAI_CHAT_MODEL=gpt-4.1-mini
+
 CHAT_MEMORY_ENABLED=true
 CHAT_MEMORY_MAX_TURNS=6
 CHAT_MEMORY_CONTEXT_CHARS=6000
 CHAT_MEMORY_TTL_HOURS=168
 ```
 
-`QDRANT_URL` points to the Compose service by default. For a backend run outside
-Docker, use `http://localhost:6333`. Keep `.env` private: it is ignored by Git.
+For a local no-key demonstration:
+
+```env
+DEMO_MODE=true
+RAG_EMBEDDING_PROVIDER=local_hash
+```
+
+`local_hash` permits functional workflow testing but is not a semantic embedding benchmark.
+
+## Evaluation
+
+The offline runner measures retrieval precision/recall, MRR, NDCG, schema exact match, tool routing, citation coverage, verifier blocking, latency, and estimated cost without provider calls:
+
+```powershell
+python .\evals\runners\run_agentic_rag_evals.py
+```
+
+The live runner sends read-only requests to the local API and records model telemetry. It requires a manually reviewed ground truth before metrics are presented as quality results:
+
+```powershell
+python .\evals\runners\run_live_agentic_evals.py --api-base-url http://localhost:8000
+```
+
+See the [acceptance plan](acceptance-test-plan.md) for the required professional test matrix and [evaluation assets](../evals/README.md) for metric definitions and limitations.

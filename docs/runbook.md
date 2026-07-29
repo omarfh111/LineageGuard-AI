@@ -1,10 +1,10 @@
-# Runbook d'exécution
+# Operations runbook
 
-Ce guide décrit l'installation, la configuration et le parcours de démonstration de LineageGuard AI sous Windows/PowerShell. Il ne contient aucune clé réelle.
+This runbook is for a local Windows and Docker Desktop deployment. It is designed for the hackathon demo, not for production operation.
 
-## 1. Préparer l'environnement
+## 1. Prepare the workstation
 
-Depuis la racine du dépôt :
+From the repository root:
 
 ```powershell
 Copy-Item .env.example .env
@@ -13,168 +13,127 @@ backend\.venv\Scripts\python.exe -m pip install -e "backend[dev]"
 Push-Location frontend
 npm install
 Pop-Location
-```
 
-Vérifier Docker :
-
-```powershell
 docker version
 docker compose version
 ```
 
-L'interface DataHub locale requiert Docker. L'application peut être testée sans fournisseurs IA, mais les boutons NVIDIA/OpenAI/Groq nécessitent leurs variables d'environnement.
+Docker Desktop must show **Engine running** and use Linux containers. WSL 2 is sufficient; Windows containers are not required.
 
-## 2. Démarrer DataHub local
+## 2. Start local DataHub
 
 ```powershell
 .\scripts\start-datahub.ps1
 ```
 
-Attendre que <http://localhost:9002> réponde, puis se connecter avec les identifiants de développement indiqués par le script. Pour recharger le jeu `showcase-ecommerce` :
+The startup script loads `showcase-ecommerce` unless `-SkipDatapack` was supplied. Open <http://localhost:9002> and confirm that the showcase catalog contains assets. To reload it later, run `./scripts/load-showcase-data.ps1`. Inside LineageGuard containers use `http://host.docker.internal:8080`; for a locally run backend use `http://localhost:8080`.
 
-```powershell
-.\scripts\load-showcase-data.ps1
-```
+## 3. Configure only the needed providers
 
-DataHub expose GMS sur le port `8080`. Dans un conteneur LineageGuard, employer `http://host.docker.internal:8080`; hors Docker, employer `http://localhost:8080`.
+Put secrets only in `.env`. Never print them in PowerShell, terminal history, screenshots, commits, or LangSmith exports.
 
-## 3. Fournisseurs IA et clés
+| Capability | Required variables | Optional? |
+|---|---|---|
+| DataHub read bridge | `DATAHUB_GMS_URL`; token required for non-local DataHub | No |
+| 3D catalog cache | `CATALOG_*` | No, defaults are safe |
+| Local metadata index | `QDRANT_*`, `RAG_EMBEDDING_*` | No, local hash demo mode exists |
+| RAG planning and answer generation | `OPENAI_API_KEY`, `OPENAI_CHAT_MODEL` | Yes; demo fallback is available |
+| NVIDIA advisory critique | `NVIDIA_API_KEY`, `NVIDIA_CRITIC_MODEL` | Yes |
+| OpenAI factual judge | `OPENAI_API_KEY`, `OPENAI_JUDGE_MODEL` | Yes |
+| Groq technical/safety judge | `GROQ_API_KEY`, `GROQ_JUDGE_MODEL` | Yes |
+| LangSmith tracing | `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` | Yes |
 
-Créez les clés uniquement dans les consoles officielles, copiez-les directement dans `.env`, puis ne les affichez plus dans un terminal, un chat ou une capture.
-
-| Rôle | Variable | Fournisseur | Remarque |
-|---|---|---|---|
-| Critique consultative | `NVIDIA_API_KEY` | NVIDIA Build | Le modèle est configurable ; `z-ai/glm-5.2` est l'exemple retenu pour cette démo. |
-| Juge de grounding | `OPENAI_API_KEY` | OpenAI | Le modèle est défini par `OPENAI_JUDGE_MODEL`. |
-| Juge technique/sécurité | `GROQ_API_KEY` | Groq | Le modèle est défini par `GROQ_JUDGE_MODEL`. |
-| Tracing facultatif | `LANGSMITH_API_KEY` | LangSmith | Utiliser aussi `LANGSMITH_TRACING=true`; les anciennes variables `LANGCHAIN_*` restent compatibles. |
-
-Configuration minimale recommandée :
+Example non-secret shape:
 
 ```env
-WORKER_LLM_PROVIDER=nvidia
-WORKER_LLM_MODEL=z-ai/glm-5.2
+DATAHUB_GMS_URL=http://host.docker.internal:8080
+DATAHUB_WRITEBACK_ENABLED=false
+
+OPENAI_CHAT_MODEL=gpt-4.1-mini
+OPENAI_JUDGE_MODEL=gpt-4.1-mini
+GROQ_JUDGE_MODEL=openai/gpt-oss-20b
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
-NVIDIA_API_KEY=...
-NVIDIA_CRITIC_MODEL=z-ai/glm-5.2
 NVIDIA_TIMEOUT_SECONDS=90
 
 LANGSMITH_TRACING=true
-LANGSMITH_API_KEY=...
 LANGSMITH_PROJECT=lineageguard-ai
-LANGSMITH_ENDPOINT=https://api.smith.langchain.com
-
-OPENAI_API_KEY=...
-OPENAI_JUDGE_MODEL=gpt-4.1-mini
-GROQ_API_KEY=...
-GROQ_JUDGE_MODEL=openai/gpt-oss-20b
-JUDGE_TEMPERATURE=0
-JUDGE_TIMEOUT_SECONDS=60
-JUDGE_MAX_RETRIES=1
 ```
 
-Après toute exposition accidentelle d'une clé, révoquez-la dans la console du fournisseur et remplacez-la dans `.env`. Ne conservez pas la clé dans l'historique PowerShell.
+`WORKER_LLM_PROVIDER` and `WORKER_LLM_MODEL` are not consumed by the current application. The chat uses `OPENAI_CHAT_MODEL`; NVIDIA is an advisory critic only.
 
-## 4. Lancer l'application
+## 4. Start the application
 
 ```powershell
 docker compose up --build -d
 docker compose ps
-```
-
-Les deux services `backend` et `frontend` doivent être `healthy` :
-
-```powershell
 Invoke-RestMethod http://localhost:8000/api/v1/health
 ```
 
-Ouvrir ensuite <http://localhost:5173>.
+Expected services are `backend`, `frontend`, and `qdrant`, all healthy. Open <http://localhost:5173> only after the health check returns `status: ok`.
 
-```mermaid
-sequenceDiagram
-    participant U as Utilisateur
-    participant UI as Interface
-    participant API as API
-    participant DH as DataHub MCP
-    participant NV as NVIDIA
-    participant O as OpenAI
-    participant G as Groq
+## 5. Startup sequence and catalog cache
 
-    U->>UI: Proposer un changement
-    UI->>API: POST /analyses/impact
-    API->>DH: schéma + lineage (lecture seule)
-    DH-->>API: preuves
-    API-->>UI: rapport + risque
-    UI->>API: POST /remediations/plan
-    API-->>UI: plan non exécuté
-    U->>UI: Lancer la critique
-    UI->>API: POST /debates/critique
-    API->>NV: avis consultatif JSON
-    NV-->>UI: résumé et problèmes
-    U->>UI: Lancer les juges
-    par appels indépendants
-      API->>O: même dossier compact
-      API->>G: même dossier compact
-    end
-    O-->>API: verdict + justification auditable
-    G-->>API: verdict + justification auditable
-    API-->>UI: décision déterministe
-```
+1. Starting the backend schedules a server-owned 3D catalog load.
+2. The root catalog becomes `READY` after its bounded assets are available. This may occur before all relationships have been enriched.
+3. The UI polls the cache every five seconds and remains interactive while edges are being added in the background.
+4. The API polls root URNs at the configured interval. A real changed identity must persist for two consecutive polls before a full refresh starts.
+5. A manual refresh or a LineageGuard action marks the graph stale, keeps the old graph visible, and performs an atomic graph replacement when finished.
 
-## 5. Procédure de démonstration
+Do not expect the **Load 50 more assets** control when the cache already holds every discovered asset within `CATALOG_MAX_ASSETS`.
 
-1. Garder l'URN exemple ou rechercher un actif dans DataHub.
-2. Utiliser un `ADD_COLUMN` nullable pour une première démonstration simple. Les cas `DROP_COLUMN` et `CHANGE_COLUMN_TYPE` sont volontairement plus risqués.
-3. Vérifier que le rapport indique des actifs, preuves, limites et formule de risque.
-4. Lancer la critique NVIDIA et examiner son résumé. Elle ne modifie rien.
-5. Lancer OpenAI + Groq. Cet acte peut consommer les quotas/crédits configurés.
-6. Ouvrir les justifications auditées ; elles ne sont pas des chaînes de pensée privées.
-7. En cas de `NEEDS_REPAIR`, corriger les hypothèses ou les contrats. En cas de `FINALIZE_READ_ONLY`, préparer éventuellement une proposition HITL.
+## 6. Standard demo procedure
 
-## 6. Write-back : procédure contrôlée
+1. Confirm DataHub, Qdrant, and provider configuration through `/api/v1/health`.
+2. Open the 3D catalog; wait until its asset count is non-zero and the status says `READY`.
+3. Hover and select a node to show its URN, type, platform, owner count, and in-session actions.
+4. Index DataHub metadata in the RAG panel. After the first successful index, re-indexing remains non-blocking.
+5. Ask one schema or lineage question. Show the target-resolution card, MCP citations, and verification result.
+6. Submit a safe nullable `ADD_COLUMN` request. Show evidence, risk score, and non-executable plan.
+7. If external keys are intentionally enabled, run NVIDIA then the independent judges. Explain that `NEEDS_REPAIR`, `AWAITING_HUMAN`, and `BLOCKED` are safety outcomes, not application failures.
+8. Keep write-back disabled unless running the dedicated disposable write proof.
 
-Par défaut :
+## 7. Tracing and operational observability
 
-```env
-DATAHUB_WRITEBACK_ENABLED=false
-```
+With LangSmith enabled, inspect the `lineageguard-ai` project for these root traces:
 
-Ce réglage est recommandé pour le hackathon. L'approbation humaine peut être montrée, mais l'écriture DataHub est bloquée.
+- `lineageguard_agentic_rag_request`
+- `lineageguard_nvidia_advisory_critic`
+- `lineageguard_openai_judge`
+- `lineageguard_groq_judge`
 
-Pour préparer une proposition, il faut un `run_id` retourné par un double `PASS` et une clé d'idempotence. L'interface la génère automatiquement. Avant d'activer une écriture réelle, vérifier :
+Use trace hierarchy and metadata to inspect latency and errors. Do not export raw trace inputs or outputs to a public hackathon artifact without reviewing them for metadata that should remain private. LangGraph tracing is automatic once the environment is enabled; the named wrappers add visibility around non-LangGraph provider calls.
 
-- l'actif cible et le contenu du document ;
-- le snapshot préparé ;
-- l'historique d'audit ;
-- l'accord humain explicite ;
-- le fait que l'environnement DataHub est bien un environnement de démo.
-
-L'activation de `DATAHUB_WRITEBACK_ENABLED=true` est une action sensible. Recréez ensuite le backend :
+## 8. Normal maintenance commands
 
 ```powershell
-docker compose up -d --force-recreate backend
+# Read state
+docker compose ps
+docker compose logs backend --tail 200
+Invoke-RestMethod http://localhost:8000/api/v1/health
+Invoke-RestMethod http://localhost:8000/api/v1/datahub/catalog/cache
+Invoke-RestMethod http://localhost:8000/api/v1/chat/index/status
+
+# Apply a code or .env change
+docker compose up --build -d
+
+# Stop services but retain SQLite and Qdrant volumes
+docker compose down
 ```
 
-Ne l'activez jamais pour contourner un échec de juge ou sans examiner la proposition.
+Avoid `docker compose down -v` unless you deliberately want to erase the local Qdrant index and SQLite audit trail.
 
-## 7. Vérifications qualité
+## 9. Quality gates before a demonstration
 
 ```powershell
 Push-Location backend
-.\.venv\Scripts\python.exe -m pytest -p no:cacheprovider tests
+python -m pytest tests -q -p no:cacheprovider
 Pop-Location
 
 Push-Location frontend
 npm run check
 Pop-Location
 
-docker compose ps
+python .\evals\runners\run_agentic_rag_evals.py
 ```
 
-Les tests unitaires n'appellent pas NVIDIA, OpenAI, Groq ni DataHub externe. Les tests d'intégration DataHub sont explicitement activés :
-
-```powershell
-$env:RUN_DATAHUB_INTEGRATION = '1'
-$env:PYTHONPATH = (Join-Path (Get-Location) 'backend')
-python -m pytest backend\tests\integration
-```
+Run the professional acceptance plan before submission. It includes the tests that must be manually evidenced: full catalog cache, schema and lineage grounding, no-proof refusal, memory isolation, safety routing, independent judges, and optional write proof.

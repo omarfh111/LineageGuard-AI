@@ -11,6 +11,7 @@ import re
 from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langsmith import traceable
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
@@ -21,6 +22,7 @@ from app.domain.contracts import (
     AgenticTraceStep,
     ChatActionProposal,
     ChatActionType,
+    ChatTargetResolution,
     ChatRequest,
     ChatResponse,
     ModelUsage,
@@ -92,6 +94,9 @@ class AgenticChatState(TypedDict):
     answer: NotRequired[str]
     verification_note: NotRequired[str]
     verification: NotRequired[VerificationResult]
+    target_resolution: NotRequired[ChatTargetResolution]
+    active_asset: NotRequired[RagCitation | None]
+    action_proposal: NotRequired[ChatActionProposal]
     tool_round: NotRequired[int]
     trace: list[AgenticTraceStep]
 
@@ -219,7 +224,7 @@ class KeywordPlanningProvider:
 
     def plan_sync(self, question: str) -> AgentPlan:
         lowered = question.lower()
-        terms = " ".join(re.findall(r"[A-Za-z0-9_.-]+", question)[:8]) or "*"
+        terms = _fallback_search_terms(question)
         return AgentPlan(
             search_terms=terms,
             need_schema=any(word in lowered for word in ("schema", "column", "field", "colonne", "type")),
@@ -229,6 +234,106 @@ class KeywordPlanningProvider:
             ),
             rationale="Deterministic fallback classification; no model planner was available.",
         )
+
+
+def _fallback_search_terms(question: str) -> str:
+    """Extract asset-like terms when a structured planner is unavailable.
+
+    Passing an entire natural-language question to DataHub search makes an
+    exact full-text match unlikely (for example, ``What datasets named orders
+    exist``).  This fallback removes conversational and catalog vocabulary but
+    deliberately keeps identifiers, dotted names, and URN fragments.
+    """
+
+    stop_words = {
+        "a", "about", "all", "and", "are", "asset", "assets", "catalog", "catalogue",
+        "called", "can", "column", "columns", "datahub", "dataset", "datasets", "depend",
+        "do", "downstream", "exist", "for", "from", "give", "in", "is", "its", "lineage", "on",
+        "list", "me", "metadata", "name", "named", "of", "please", "schema", "show", "tell", "the",
+        "this", "to", "types", "upstream", "what", "which", "with",
+        "actif", "actifs", "amont", "aval", "catalogue", "colonnes", "comment", "dans", "de",
+        "des", "du", "donne", "est", "et", "les", "liste", "moi", "nom", "nomme", "pour",
+        "quels", "quel", "recherche", "schema", "schéma", "toutes", "tous", "types", "un", "une",
+    }
+    tokens = re.findall(r"[A-Za-z0-9_.:-]+", question)
+    meaningful = [token for token in tokens if token.lower() not in stop_words and len(token) > 1]
+    return " ".join(meaningful[:8]) or "*"
+
+
+_PLATFORMS = {"snowflake", "dbt", "postgres", "postgresql", "s3", "tableau", "powerbi", "looker", "spark"}
+
+
+def _search_terms_for_question(question: str, planned_terms: str, active_asset: RagCitation | None) -> str:
+    """Produce a stable DataHub query from user intent, never an LLM sentence."""
+
+    if re.search(r"\b(it|its|this asset|cet actif|son schéma|sa schema)\b", question, re.IGNORECASE) and active_asset:
+        return active_asset.label
+    urn_match = re.search(r"urn:li:[^\s`]+", question)
+    if urn_match:
+        return urn_match.group(0)
+    direct = re.search(
+        r"\b(?:of|from|about|de|du|des|sur)\s+(?:the\s+|le\s+|la\s+|les\s+)?(?:(?:snowflake|dbt|postgres(?:ql)?|s3|tableau|powerbi|looker|spark)\s+)?([A-Za-z0-9_.-]+)",
+        question,
+        re.IGNORECASE,
+    )
+    if direct:
+        return direct.group(1)
+    extracted = _fallback_search_terms(question)
+    return extracted if extracted != "*" else _fallback_search_terms(planned_terms)
+
+
+def _resolve_target(
+    question: str,
+    candidates: list[RagCitation],
+    active_asset: RagCitation | None,
+    required: bool,
+) -> ChatTargetResolution:
+    if not required:
+        return ChatTargetResolution(status="NOT_REQUIRED", detail="A target-specific DataHub read is not required for this question.")
+    if not candidates:
+        return ChatTargetResolution(
+            status="NOT_FOUND",
+            detail="No current DataHub asset matched the requested target, so no schema or lineage tool was called.",
+        )
+    lowered = question.lower()
+    pronoun = bool(re.search(r"\b(it|its|this asset|cet actif|son schéma|sa schema)\b", lowered))
+    if pronoun:
+        if active_asset and any(item.urn == active_asset.urn for item in candidates):
+            return ChatTargetResolution(status="RESOLVED", detail=f"Resolved pronoun to the last verified asset: {active_asset.urn}", targets=[active_asset])
+        return ChatTargetResolution(
+            status="NOT_FOUND",
+            detail="No current verified asset is available for this pronoun, so no schema or lineage tool was called.",
+        )
+    urn_match = re.search(r"urn:li:[^\s`]+", question)
+    if urn_match:
+        exact = [item for item in candidates if item.urn == urn_match.group(0)]
+        if len(exact) == 1:
+            return ChatTargetResolution(status="RESOLVED", detail=f"Resolved explicit DataHub URN: {exact[0].urn}", targets=exact)
+        return ChatTargetResolution(status="NOT_FOUND", detail="The explicit DataHub URN was not returned by the current MCP search.")
+    platform = next((name for name in _PLATFORMS if re.search(rf"\b{re.escape(name)}\b", lowered)), None)
+    filtered = candidates
+    if platform:
+        canonical = "postgres" if platform == "postgresql" else platform
+        filtered = [item for item in filtered if (item.platform_urn or "").lower().endswith(f":{canonical}")]
+    asset_term = _search_terms_for_question(question, "", None).lower()
+    if asset_term and asset_term != "*":
+        exact = [item for item in filtered if item.label.lower() == asset_term]
+        named = exact or [item for item in filtered if asset_term in item.label.lower()]
+        # Never fall back to unrelated fuzzy DataHub search results. For a
+        # target-specific read, an asset name that did not match a live label
+        # is a safe NOT_FOUND, not an invitation to choose arbitrary assets.
+        filtered = named
+    unique = _dedupe_citations(filtered)
+    if len(unique) == 1:
+        return ChatTargetResolution(status="RESOLVED", detail=f"Resolved DataHub target: {unique[0].urn}", targets=unique)
+    if not unique:
+        return ChatTargetResolution(status="NOT_FOUND", detail="No current DataHub asset matched the requested target, so no schema or lineage tool was called.")
+    choices = ", ".join(f"{item.label} ({(item.platform_urn or 'unknown').rsplit(':', 1)[-1]})" for item in unique[:6])
+    return ChatTargetResolution(
+        status="AMBIGUOUS",
+        detail=f"Multiple verified DataHub assets match this request: {choices}. Please choose a platform or provide a full URN before schema or lineage is read.",
+        targets=unique,
+    )
 
 
 class HybridChatAgent:
@@ -248,24 +353,30 @@ class HybridChatAgent:
         self._planner = planner or _planning_provider(self._settings, self._usage_ledger)
         self._memory_context = ""
         self._memory_turn_count = 0
+        self._active_asset: RagCitation | None = None
         self._graph = self._build_graph()
 
-    def set_memory_context(self, turns: list[tuple[str, str]]) -> None:
+    def set_memory_context(self, turns: list[tuple[str, str]], active_asset: RagCitation | None = None) -> None:
         """Attach bounded prior turns without treating them as verified evidence."""
 
         self._memory_turn_count = len(turns)
         self._memory_context = "\n".join(
             f"User: {question}\nAssistant: {answer}" for question, answer in turns
         )
+        self._active_asset = active_asset
         for provider in (self._completion, self._planner):
             setter = getattr(provider, "set_memory_context", None)
             if callable(setter):
                 setter(self._memory_context)
 
+    @traceable(name="lineageguard_agentic_rag_request", run_type="chain")
     async def respond(self, request: ChatRequest) -> ChatResponse:
+        action_proposal = _propose_action(request.message)
         state = await self._graph.ainvoke(
             {
                 "request": request,
+                "active_asset": self._active_asset,
+                "action_proposal": action_proposal,
                 "trace": (
                     [_trace("memory", "Conversation memory", "COMPLETED", f"Loaded {self._memory_turn_count} bounded prior turn(s) as non-evidence context.")]
                     if self._memory_turn_count
@@ -275,15 +386,24 @@ class HybridChatAgent:
             },
             {"run_name": "lineageguard-agentic-rag", "tags": ["agentic-rag", "read-only"]},
         )
+        resolution = state.get("target_resolution")
+        active_asset = (
+            resolution.targets[0]
+            if state.get("verification") and state["verification"].passed
+            and resolution and resolution.status == "RESOLVED" and len(resolution.targets) == 1
+            else None
+        )
         return ChatResponse(
             answer=state["answer"],
             citations=state["sources"],
             verification_note=state["verification_note"],
-            action_proposal=_propose_action(request.message),
+            action_proposal=action_proposal,
             agent_trace=state["trace"],
             evidence=state.get("evidence", []),
             verification=state.get("verification"),
             model_usage=self._usage_ledger.summary(),
+            target_resolution=resolution,
+            active_verified_asset=active_asset,
         )
 
     def _build_graph(self):
@@ -305,6 +425,11 @@ class HybridChatAgent:
 
     async def _plan(self, state: AgenticChatState) -> dict[str, object]:
         plan = await self._planner.plan(state["request"].message)
+        plan = plan.model_copy(update={
+            "search_terms": _search_terms_for_question(
+                state["request"].message, plan.search_terms, state.get("active_asset")
+            )
+        })
         mode = "adaptive model plan" if isinstance(self._planner, OpenAIPlanningProvider) else "deterministic fallback plan"
         return {
             "plan": plan,
@@ -328,23 +453,22 @@ class HybridChatAgent:
         plan = state["plan"]
         result = await self._datahub.search(plan.search_terms, num_results=10)
         graph = catalog_from_search(result, plan.search_terms)
-        verified = _citations_from_graph(graph.nodes)
-        evidence = _search_evidence(graph.nodes)
+        matches = _citations_from_graph(graph.nodes)
+        requires_target = plan.need_schema or plan.need_lineage or state["action_proposal"].action == ChatActionType.ANALYZE_IMPACT
+        prior_resolution = state.get("target_resolution")
+        resolution = prior_resolution if prior_resolution and prior_resolution.status == "RESOLVED" else _resolve_target(
+            state["request"].message, matches, state.get("active_asset"), requires_target
+        )
+        targets = resolution.targets if resolution.status == "RESOLVED" else []
+        verified = targets if requires_target else matches
+        evidence = _search_evidence(verified)
         tools = ["search"]
-        # Never transform a Qdrant candidate into a new DataHub lookup. An
-        # unrelated semantic candidate could otherwise become an accidental
-        # MCP tool target for a question about a nonexistent asset.
-        # Qdrant candidates are useful for search recovery, but are never safe
-        # tool targets on their own. Schema and lineage calls must be anchored
-        # to an asset that the current DataHub MCP search has confirmed.
-        targets = verified[:2]
-        if plan.need_schema:
+        if plan.need_schema and targets:
             for target in targets:
                 schema = await self._datahub.list_schema_fields(target.urn)
                 evidence.append(_schema_evidence(target, schema))
-            if targets:
-                tools.append("list_schema_fields")
-        if plan.need_lineage:
+            tools.append("list_schema_fields")
+        if plan.need_lineage and targets:
             for target in targets:
                 lineage = catalog_from_lineage(
                     await self._datahub.get_lineage(target.urn, "DOWNSTREAM", 1, max_results=25),
@@ -354,11 +478,11 @@ class HybridChatAgent:
                 )
                 verified.extend(_citations_from_graph(node for node in lineage.nodes if node.urn != target.urn))
                 evidence.append(_lineage_evidence(target, lineage))
-            if targets:
-                tools.append("get_lineage")
+            tools.append("get_lineage")
         return {
             "verified": _dedupe_citations(verified),
             "evidence": _dedupe_evidence(evidence),
+            "target_resolution": resolution,
             "tool_round": state.get("tool_round", 0) + 1,
             "trace": [
                 *state["trace"],
@@ -368,11 +492,23 @@ class HybridChatAgent:
                     "COMPLETED",
                     f"Ran allowlisted tools: {', '.join(tools)}; live matches: {len(verified)}; evidence records: {len(evidence)}.",
                 ),
+                _trace("target", "Asset target resolver", resolution.status, resolution.detail),
             ],
         }
 
     async def _reason(self, state: AgenticChatState) -> dict[str, object]:
-        sources = _merge_sources(state["retrieved"], state["verified"], state["request"].max_sources)
+        resolution = state.get("target_resolution")
+        if resolution and resolution.status in {"AMBIGUOUS", "NOT_FOUND"}:
+            return {
+                "sources": state.get("verified", []),
+                "answer": resolution.detail,
+                "trace": [*state["trace"], _trace("reasoning", "Reasoning agent", "LIMITED", "Returned a deterministic limitation; no unverified target was used.")],
+            }
+        sources = (
+            _dedupe_citations(state["verified"])[: state["request"].max_sources]
+            if resolution and resolution.status == "RESOLVED"
+            else _merge_sources(state["retrieved"], state["verified"], state["request"].max_sources)
+        )
         answer = await self._completion.answer(state["request"].message, sources, state.get("evidence", []))
         return {
             "sources": sources,
@@ -386,20 +522,31 @@ class HybridChatAgent:
     def _verify(self, state: AgenticChatState) -> dict[str, object]:
         plan = state["plan"]
         evidence = state.get("evidence", [])
+        resolution = state.get("target_resolution")
         checks = ["At least one DataHub MCP evidence record is present." if evidence else "No MCP evidence record is present."]
         issues: list[str] = []
+        if resolution and resolution.status == "AMBIGUOUS":
+            issues.append("A platform or explicit DataHub asset selection is required before schema or lineage reads.")
+        if resolution and resolution.status == "NOT_FOUND":
+            issues.append("No live DataHub MCP asset matched the requested target.")
         if not evidence:
             issues.append("No live DataHub MCP evidence was returned.")
         if plan.need_schema and not any(item.kind == "schema" for item in evidence):
             issues.append("The question requires schema evidence, but no schema fields were returned.")
         if plan.need_lineage and not any(item.kind == "lineage" for item in evidence):
             issues.append("The question requires lineage evidence, but no lineage result was returned.")
+        target_urns = {target.urn for target in resolution.targets} if resolution and resolution.status == "RESOLVED" else set()
+        if target_urns:
+            for required_kind in (("schema", plan.need_schema), ("lineage", plan.need_lineage)):
+                kind, required = required_kind
+                if required and not any(item.kind == kind and item.asset_urn in target_urns for item in evidence):
+                    issues.append(f"No {kind} evidence belongs to the resolved DataHub target.")
         cited_ids = {item.id for item in evidence if f"[{item.id}]" in state["answer"]}
         if evidence and not cited_ids:
             issues.append("The generated answer does not cite an MCP evidence ID.")
-        if plan.need_schema and not any(item.kind == "schema" and item.id in cited_ids for item in evidence):
+        if plan.need_schema and not any(item.kind == "schema" and item.asset_urn in target_urns and item.id in cited_ids for item in evidence):
             issues.append("The answer does not cite the returned schema evidence.")
-        if plan.need_lineage and not any(item.kind == "lineage" and item.id in cited_ids for item in evidence):
+        if plan.need_lineage and not any(item.kind == "lineage" and item.asset_urn in target_urns and item.id in cited_ids for item in evidence):
             issues.append("The answer does not cite the returned lineage evidence.")
         passed = not issues
         verification = VerificationResult(passed=passed, checks=checks, issues=issues)
@@ -421,6 +568,9 @@ class HybridChatAgent:
 
     def _next_after_verification(self, state: AgenticChatState) -> Literal["repair", "complete"]:
         verification = state["verification"]
+        resolution = state.get("target_resolution")
+        if resolution and resolution.status in {"AMBIGUOUS", "NOT_FOUND"}:
+            return "complete"
         return "repair" if not verification.passed and state.get("tool_round", 0) < 2 else "complete"
 
 

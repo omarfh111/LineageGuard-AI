@@ -46,3 +46,32 @@ async def test_server_catalog_cache_loads_once_and_attaches_local_actions() -> N
     assert snapshot.graph.edges[0].target_urn == TARGET
     source = next(node for node in snapshot.graph.nodes if node.urn == SOURCE)
     assert source.recent_actions[0].action == "IMPACT_ANALYSIS_COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_cache_identity_uses_roots_not_enriched_lineage_nodes() -> None:
+    settings = Settings(
+        app_env="test", database_url="sqlite:///:memory:", datahub_gms_url="http://localhost:8080",
+        datahub_gms_token=None, catalog_autoload=False, catalog_max_assets=20, catalog_max_edges=20,
+    )
+    cache = CatalogCache(settings, client_factory=CacheClient)  # type: ignore[arg-type]
+
+    await cache._refresh("initial")
+
+    assert not await cache._catalog_identity_changed()
+
+
+@pytest.mark.asyncio
+async def test_cache_requires_two_identical_changed_polls_before_refreshing() -> None:
+    settings = Settings(
+        app_env="test", database_url="sqlite:///:memory:", datahub_gms_url="http://localhost:8080",
+        datahub_gms_token=None, catalog_autoload=False, catalog_max_assets=20, catalog_max_edges=20,
+    )
+    cache = CatalogCache(settings, client_factory=CacheClient)  # type: ignore[arg-type]
+    await cache._refresh("initial")
+
+    # Simulate an external root change. A single inconsistent search response
+    # must not trigger another complete lineage traversal.
+    cache._root_identity = frozenset({"urn:li:dataset:(urn:li:dataPlatform:dbt,old.orders,PROD)"})
+    assert not await cache._catalog_identity_changed()
+    assert await cache._catalog_identity_changed()

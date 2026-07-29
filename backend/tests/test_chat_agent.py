@@ -22,7 +22,7 @@ class FakeIndex:
 
 class FakeDataHub:
     async def search(self, query: str, num_results: int = 10, offset: int = 0) -> dict:
-        assert query == "Which assets depend on orders"
+        assert query == "orders"
         assert (num_results, offset) == (10, 0)
         return {
             "structuredContent": {
@@ -48,9 +48,8 @@ class FakeDataHub:
 class FakeCompletion:
     async def answer(self, question: str, sources: list[RagCitation], evidence: list) -> str:
         assert question == "Which assets depend on orders?"
-        assert {source.source for source in sources} == {
-            "qdrant_metadata_index", "datahub_mcp_live"
-        }
+        # A target-specific answer may only use the resolved live MCP asset.
+        assert {source.source for source in sources} == {"datahub_mcp_live"}
         assert evidence[0].id == "E1"
         lineage = next(item for item in evidence if item.kind == "lineage")
         return f"orders_dashboard is a live DataHub match. [E1] [{lineage.id}]"
@@ -111,12 +110,12 @@ async def test_hybrid_chat_retrieves_then_verifies_with_datahub_mcp() -> None:
     ).respond(ChatRequest(message="Which assets depend on orders?"))
 
     assert response.answer.startswith("orders_dashboard is a live DataHub match. [E1] [E-lineage-")
-    assert len(response.citations) == 2
+    assert len(response.citations) == 1
     assert response.citations[0].source == "datahub_mcp_live"
     assert response.verification and response.verification.passed
     assert response.action_proposal.action == ChatActionType.NONE
     assert [step.id for step in response.agent_trace] == [
-        "planning", "retriever", "mcp_tools", "reasoning", "verification"
+        "planning", "retriever", "mcp_tools", "target", "reasoning", "verification"
     ]
 
 
@@ -133,6 +132,18 @@ def test_chat_never_proposes_a_direct_write() -> None:
 
     assert proposal.action == ChatActionType.HITL_WRITEBACK
     assert proposal.requires_confirmation
+
+
+def test_keyword_planner_extracts_an_asset_name_from_a_natural_language_question() -> None:
+    plan = KeywordPlanningProvider().plan_sync("What datasets named orders exist in the DataHub catalog?")
+
+    assert plan.search_terms == "orders"
+
+
+def test_keyword_planner_removes_conversational_words_from_asset_query() -> None:
+    plan = KeywordPlanningProvider().plan_sync("Tell me about the orders dataset")
+
+    assert plan.search_terms == "orders"
 
 
 @pytest.mark.asyncio
@@ -159,3 +170,71 @@ async def test_agent_never_reads_schema_for_an_unverified_qdrant_candidate() -> 
 
     assert datahub.schema_calls == []
     assert response.verification and not response.verification.passed
+    assert response.target_resolution and response.target_resolution.status == "NOT_FOUND"
+
+
+class AmbiguousOrdersDataHub:
+    def __init__(self) -> None:
+        self.schema_calls: list[str] = []
+        self.lineage_calls: list[str] = []
+
+    async def search(self, query: str, num_results: int = 10, offset: int = 0) -> dict:
+        assert query == "orders"
+        return {"structuredContent": {"searchResults": [
+            {"entity": {"urn": "urn:li:dataset:(urn:li:dataPlatform:snowflake,db.orders,PROD)", "type": "DATASET", "properties": {"name": "orders"}, "platform": {"urn": "urn:li:dataPlatform:snowflake"}}},
+            {"entity": {"urn": "urn:li:dataset:(urn:li:dataPlatform:dbt,shop.orders,PROD)", "type": "DATASET", "properties": {"name": "orders"}, "platform": {"urn": "urn:li:dataPlatform:dbt"}}},
+        ]}}
+
+    async def list_schema_fields(self, urn: str) -> dict:
+        self.schema_calls.append(urn)
+        return {"structuredContent": {"fields": []}}
+
+    async def get_lineage(self, urn: str, direction: str, max_hops: int, max_results: int = 100) -> dict:
+        self.lineage_calls.append(urn)
+        return {"structuredContent": {"downstreams": {"searchResults": []}}}
+
+
+@pytest.mark.asyncio
+async def test_schema_or_lineage_never_selects_an_ambiguous_orders_asset() -> None:
+    datahub = AmbiguousOrdersDataHub()
+    response = await HybridChatAgent(
+        datahub, SchemaIndex(), completion=SafeNoMatchCompletion(), planner=KeywordPlanningProvider()  # type: ignore[arg-type]
+    ).respond(ChatRequest(message="Show the downstream lineage of the orders dataset"))
+
+    assert response.target_resolution and response.target_resolution.status == "AMBIGUOUS"
+    assert datahub.schema_calls == []
+    assert datahub.lineage_calls == []
+    assert response.verification and not response.verification.passed
+
+
+class SnowflakeOrdersDataHub:
+    snowflake_orders = "urn:li:dataset:(urn:li:dataPlatform:snowflake,db.orders,PROD)"
+    order_details = "urn:li:dataset:(urn:li:dataPlatform:snowflake,db.order_details,PROD)"
+
+    def __init__(self) -> None:
+        self.schema_calls: list[str] = []
+
+    async def search(self, query: str, num_results: int = 10, offset: int = 0) -> dict:
+        assert query == "orders"
+        return {"structuredContent": {"searchResults": [
+            {"entity": {"urn": self.snowflake_orders, "type": "DATASET", "properties": {"name": "orders"}, "platform": {"urn": "urn:li:dataPlatform:snowflake"}}},
+            {"entity": {"urn": self.order_details, "type": "DATASET", "properties": {"name": "order_details"}, "platform": {"urn": "urn:li:dataPlatform:snowflake"}}},
+        ]}}
+
+    async def list_schema_fields(self, urn: str) -> dict:
+        self.schema_calls.append(urn)
+        return {"structuredContent": {"fields": [{"fieldPath": "order_id", "nativeDataType": "NUMBER"}]}}
+
+
+@pytest.mark.asyncio
+async def test_snowflake_orders_schema_is_locked_to_the_exact_resolved_urn() -> None:
+    datahub = SnowflakeOrdersDataHub()
+    response = await HybridChatAgent(
+        datahub, SchemaIndex(), completion=AnyCompletion(), planner=KeywordPlanningProvider()  # type: ignore[arg-type]
+    ).respond(ChatRequest(message="What is the schema of the Snowflake orders dataset?"))
+
+    assert response.target_resolution and response.target_resolution.status == "RESOLVED"
+    assert [item.urn for item in response.target_resolution.targets] == [datahub.snowflake_orders]
+    assert datahub.schema_calls == [datahub.snowflake_orders]
+    assert all(datahub.order_details not in evidence.asset_urn for evidence in response.evidence)
+    assert response.verification and response.verification.passed

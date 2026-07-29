@@ -183,6 +183,7 @@ async def persisted_index_status(settings: Settings | None = None) -> RagIndexSt
             total_assets=points,
             message="Existing Qdrant metadata index is ready. Live DataHub MCP verification remains enabled.",
             updated_at=datetime.now(UTC),
+            query_available=points > 0,
         )
     except Exception:
         return RagIndexStatus(message="Qdrant index is unavailable.")
@@ -199,11 +200,15 @@ class RagIndexCoordinator:
     def status(self) -> RagIndexStatus:
         return self._status.model_copy()
 
-    def start(self, index: QdrantMetadataIndex) -> RagIndexStatus:
+    def start(self, index: QdrantMetadataIndex, *, query_available: bool = False) -> RagIndexStatus:
         if self._task and not self._task.done():
             return self.status()
         self._status = RagIndexStatus(
-            state=RagIndexState.RUNNING, message="Indexing DataHub metadata in the background.", updated_at=datetime.now(UTC)
+            state=RagIndexState.RUNNING,
+            message=("Refreshing the metadata index in the background; verified chat remains available."
+                     if query_available else "Indexing DataHub metadata in the background."),
+            updated_at=datetime.now(UTC),
+            query_available=query_available,
         )
         self._task = asyncio.create_task(self._run(index))
         return self.status()
@@ -212,17 +217,22 @@ class RagIndexCoordinator:
         async def progress(indexed: int, total: int) -> None:
             self._status = RagIndexStatus(
                 state=RagIndexState.RUNNING, indexed_assets=indexed, total_assets=total,
-                message="Indexing safe metadata projections.", updated_at=datetime.now(UTC)
+                message="Indexing safe metadata projections.", updated_at=datetime.now(UTC),
+                query_available=self._status.query_available,
             )
         try:
             indexed = await index.ingest(progress)
             self._status = RagIndexStatus(
                 state=RagIndexState.COMPLETED, indexed_assets=indexed, total_assets=indexed,
-                message="RAG index is ready. Live DataHub MCP verification remains enabled.", updated_at=datetime.now(UTC)
+                message="RAG index is ready. Live DataHub MCP verification remains enabled.", updated_at=datetime.now(UTC),
+                query_available=True,
             )
         except Exception as error:
             self._status = RagIndexStatus(
-                state=RagIndexState.FAILED, message=f"RAG ingestion failed: {type(error).__name__}", updated_at=datetime.now(UTC)
+                state=RagIndexState.FAILED,
+                message=f"RAG ingestion failed: {type(error).__name__}",
+                updated_at=datetime.now(UTC),
+                query_available=self._status.query_available,
             )
 
 

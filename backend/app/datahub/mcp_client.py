@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 from urllib.parse import urlparse
 
@@ -62,8 +63,24 @@ class DataHubMcpClient:
     ) -> dict[str, Any]:
         """Run one read-only MCP tool and return its protocol result as JSON data."""
 
-        if tool_name not in READ_ONLY_TOOLS:
-            raise ValueError(f"MCP tool {tool_name!r} is not allowlisted")
+        results = await self.call_tools([(tool_name, arguments)])
+        return results[0]
+
+    async def call_tools(
+        self, calls: Sequence[tuple[str, Mapping[str, Any]]]
+    ) -> list[dict[str, Any]]:
+        """Run a bounded batch through one isolated, read-only MCP session.
+
+        The catalog cache uses this to avoid launching one Python MCP server per
+        DataHub relationship.  Each call is still validated against the same
+        allowlist and the session is closed immediately after the batch.
+        """
+
+        if not calls:
+            return []
+        for tool_name, _ in calls:
+            if tool_name not in READ_ONLY_TOOLS:
+                raise ValueError(f"MCP tool {tool_name!r} is not allowlisted")
 
         parameters = StdioServerParameters(
             command="mcp-server-datahub",
@@ -73,8 +90,10 @@ class DataHubMcpClient:
             async with stdio_client(parameters) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
-                    result = await session.call_tool(tool_name, dict(arguments))
-                    return result.model_dump(mode="json")
+                    results = await asyncio.gather(
+                        *(session.call_tool(tool_name, dict(arguments)) for tool_name, arguments in calls)
+                    )
+                    return [result.model_dump(mode="json") for result in results]
         except (OSError, BaseExceptionGroup) as error:
             raise DataHubConfigurationError(
                 "DataHub MCP is unavailable; verify that local GMS is running and reachable"
@@ -88,6 +107,21 @@ class DataHubMcpClient:
         return await self.call_tool(
             "search",
             {"query": query, "num_results": min(50, max(1, num_results)), "offset": max(0, offset)},
+        )
+
+    async def search_many(
+        self, requests: Sequence[tuple[str, int, int]]
+    ) -> list[dict[str, Any]]:
+        """Fetch several bounded search pages in one read-only MCP session."""
+
+        return await self.call_tools(
+            [
+                (
+                    "search",
+                    {"query": query, "num_results": min(50, max(1, count)), "offset": max(0, offset)},
+                )
+                for query, count, offset in requests
+            ]
         )
 
     async def list_schema_fields(self, urn: str) -> dict[str, Any]:
@@ -106,6 +140,26 @@ class DataHubMcpClient:
                 "max_hops": max_hops,
                 "max_results": max_results,
             },
+        )
+
+    async def get_lineage_many(
+        self, requests: Sequence[tuple[str, str, int, int]]
+    ) -> list[dict[str, Any]]:
+        """Fetch bounded lineage projections in one read-only MCP session."""
+
+        return await self.call_tools(
+            [
+                (
+                    "get_lineage",
+                    {
+                        "urn": urn,
+                        "upstream": direction == "UPSTREAM",
+                        "max_hops": max_hops,
+                        "max_results": max_results,
+                    },
+                )
+                for urn, direction, max_hops, max_results in requests
+            ]
         )
 
     async def save_document(self, title: str, content: str, related_asset: str, urn: str | None = None) -> dict[str, Any]:

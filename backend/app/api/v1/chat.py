@@ -41,7 +41,12 @@ async def ingest_metadata(client: DataHubClientDependency) -> RagIndexStatus:
     """Start one background, metadata-only DataHub ingestion into Qdrant."""
 
     try:
-        return rag_index_coordinator.start(QdrantMetadataIndex(client, get_settings()))
+        settings = get_settings()
+        persisted = await persisted_index_status(settings)
+        return rag_index_coordinator.start(
+            QdrantMetadataIndex(client, settings),
+            query_available=persisted.query_available,
+        )
     except (RagConfigurationError, DataHubConfigurationError) as error:
         raise HTTPException(503, str(error)) from error
 
@@ -52,10 +57,14 @@ async def query(request: ChatRequest, client: DataHubClientDependency) -> ChatRe
         agent = HybridChatAgent(
             client, QdrantMetadataIndex(client, get_settings()), get_settings()
         )
-        agent.set_memory_context(chat_memory_store.context_for(request.session_id, request.memory_enabled))
+        agent.set_memory_context(
+            chat_memory_store.context_for(request.session_id, request.memory_enabled),
+            chat_memory_store.active_asset_for(request.session_id, request.memory_enabled),
+        )
         response = await agent.respond(request)
         memory = chat_memory_store.record_turn(
-            request.session_id, request.memory_enabled, request.message, response.answer
+            request.session_id, request.memory_enabled, request.message, response.answer,
+            response.active_verified_asset,
         )
         return response.model_copy(update={"memory": memory})
     except (RagConfigurationError, ChatConfigurationError, DataHubConfigurationError) as error:

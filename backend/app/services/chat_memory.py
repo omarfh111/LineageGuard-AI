@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.core.config import Settings, get_settings
-from app.domain.contracts import ChatMemoryStatus
+from app.domain.contracts import ChatMemoryStatus, RagCitation
 from app.services.run_store import sqlite_path
 
 
@@ -46,6 +46,18 @@ class ChatMemoryStore:
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chat_memory_session ON chat_memory_turns(session_id, id)"
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_memory_active_assets (
+                    session_id TEXT PRIMARY KEY,
+                    urn TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    entity_type TEXT NOT NULL,
+                    platform_urn TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
             )
 
     def context_for(self, session_id: str | None, enabled: bool) -> list[tuple[str, str]]:
@@ -82,7 +94,8 @@ class ChatMemoryStore:
         return turns
 
     def record_turn(
-        self, session_id: str | None, enabled: bool, question: str, answer: str
+        self, session_id: str | None, enabled: bool, question: str, answer: str,
+        active_asset: RagCitation | None = None,
     ) -> ChatMemoryStatus:
         if not enabled or not session_id or not self._settings.chat_memory_enabled:
             return ChatMemoryStatus(session_id=session_id, enabled=False, max_turns=self._settings.chat_memory_max_turns)
@@ -106,7 +119,38 @@ class ChatMemoryStore:
                 """,
                 (session_id, session_id, self._settings.chat_memory_max_turns),
             )
+            if active_asset:
+                connection.execute(
+                    """
+                    INSERT INTO chat_memory_active_assets(session_id, urn, label, entity_type, platform_urn, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id) DO UPDATE SET urn=excluded.urn, label=excluded.label,
+                    entity_type=excluded.entity_type, platform_urn=excluded.platform_urn, updated_at=excluded.updated_at
+                    """,
+                    (session_id, active_asset.urn, active_asset.label, active_asset.entity_type, active_asset.platform_urn, now.isoformat()),
+                )
+            else:
+                connection.execute("DELETE FROM chat_memory_active_assets WHERE session_id = ?", (session_id,))
         return self.status(session_id, enabled=True)
+
+    def active_asset_for(self, session_id: str | None, enabled: bool) -> RagCitation | None:
+        """Return only the last unambiguous asset that completed MCP verification."""
+
+        if not enabled or not session_id or not self._settings.chat_memory_enabled:
+            return None
+        self._purge_expired()
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT urn, label, entity_type, platform_urn FROM chat_memory_active_assets WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return RagCitation(
+            urn=str(row["urn"]), label=str(row["label"]), entity_type=str(row["entity_type"]),
+            platform_urn=str(row["platform_urn"]) if row["platform_urn"] else None,
+            source="datahub_mcp_live",
+        )
 
     def status(self, session_id: str | None, enabled: bool = True) -> ChatMemoryStatus:
         if not enabled or not session_id or not self._settings.chat_memory_enabled:
@@ -129,6 +173,7 @@ class ChatMemoryStore:
     def clear(self, session_id: str) -> ChatMemoryStatus:
         with closing(self._connect()) as connection, connection:
             connection.execute("DELETE FROM chat_memory_turns WHERE session_id = ?", (session_id,))
+            connection.execute("DELETE FROM chat_memory_active_assets WHERE session_id = ?", (session_id,))
         return ChatMemoryStatus(
             session_id=session_id,
             enabled=self._settings.chat_memory_enabled,

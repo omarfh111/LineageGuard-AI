@@ -1,99 +1,102 @@
-# Diagnostic et récupération
+# Troubleshooting
 
-## Contrôle de base
+Never paste a key, `.env` content, raw provider authorization header, or unreviewed trace input into an issue or screenshot.
+
+## First checks
 
 ```powershell
 docker compose ps
 Invoke-RestMethod http://localhost:8000/api/v1/health
+Invoke-RestMethod http://localhost:8000/api/v1/datahub/catalog/cache
+Invoke-RestMethod http://localhost:8000/api/v1/chat/index/status
 docker compose logs backend --tail 200
 ```
 
-Les services `backend` et `frontend` doivent être `healthy`. Après une modification de `.env` ou du code :
+After a code or `.env` change:
 
 ```powershell
 docker compose up --build -d
 ```
 
-## Docker Desktop ne démarre pas
+## Docker Desktop is not running
 
-Vérifier que Docker Desktop affiche `Engine running`. Si le message indique que la virtualisation n'est pas détectée, activer la virtualisation matérielle dans le BIOS/UEFI ou demander l'aide de l'administrateur IT. Docker Desktop en mode Linux utilise WSL 2 ; les conteneurs Windows ne sont pas nécessaires à ce projet.
+Confirm that Docker Desktop shows **Engine running**. If it reports missing virtualization, enable virtualization in BIOS/UEFI or contact the device administrator. This project uses the Linux engine over WSL 2 and does not require Windows containers.
 
-## DataHub ou analyse indisponible
+## DataHub is unavailable or no assets appear
 
-| Symptôme | Cause probable | Action |
+| Symptom | Likely cause | Action |
 |---|---|---|
-| `DATAHUB_GMS_URL is not configured` | variable absente | configurer l'URL appropriée au mode Docker/local |
-| `DATAHUB_GMS_TOKEN is not configured` | URL non locale sans token | créer un token DataHub et le mettre seulement dans `.env` |
-| DataHub ne répond pas sur `9002` | Quickstart arrêté | exécuter `.\scripts\start-datahub.ps1` |
-| Actif/schéma absent | jeu exemple non chargé | exécuter `.\scripts\load-showcase-data.ps1` |
+| `DATAHUB_GMS_URL is not configured` | Missing or incorrect URL | Use `host.docker.internal:8080` in Docker; use `localhost:8080` outside Docker |
+| Token configuration error | Non-local DataHub without token | Create a DataHub token and put it only in `.env` |
+| No DataHub UI on port 9002 | Quickstart stopped | Run `./scripts/start-datahub.ps1` |
+| Empty catalog or missing sample asset | Datapack not loaded | Run `./scripts/load-showcase-data.ps1` |
 
-Dans Docker, l'adresse GMS locale est `http://host.docker.internal:8080`. Hors Docker, elle est `http://localhost:8080`.
+## 3D catalog stays on RUNNING
 
-## Critique NVIDIA échoue
+At a backend restart, `RUNNING` is normal only until the bounded root catalog loads. Once assets are available, the status should change to `READY` with a message that lineage relationships are still enriching. The graph remains usable during enrichment.
 
-Ne copiez pas la clé dans les logs. Vérifier uniquement les noms de variables dans `.env` :
+If the status repeatedly returns to a full refresh after it reached `READY`:
 
-```env
-NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
-NVIDIA_CRITIC_MODEL=z-ai/glm-5.2
-NVIDIA_TIMEOUT_SECONDS=90
-```
+1. Save the cache JSON and the `refresh_reason` field.
+2. Verify the backend image was rebuilt after the cache reliability update.
+3. Check that `CATALOG_MAX_ASSETS` is large enough for the local catalog.
+4. Check backend logs for DataHub MCP errors.
 
-Causes possibles : clé révoquée, modèle non disponible dans le compte, quota de prototype atteint, délai réseau ou réponse non conforme. Après correction du fichier, recréer le backend :
+The server detects external changes by polling root URNs; it intentionally does not use browser page load as a refresh trigger.
 
-```powershell
-docker compose up -d --force-recreate backend
-```
+## Filters do not show the full graph again
 
-La critique est non bloquante : elle ne peut ni changer le plan ni écrire dans DataHub.
+Clear the search text and set both filters to `All`. The UI filters the server-cached full graph locally, so the complete view is restored without another DataHub fetch. If it does not, hard-refresh the browser after rebuilding the frontend.
 
-## OpenAI ou Groq en erreur
+## Chat is disabled during indexing
 
-Un `ERROR` ne devient jamais un `PASS` par défaut. La décision devient `AWAITING_HUMAN` si un seul juge est indisponible, ou `BLOCKED` si les deux le sont.
+The first index must complete before querying. During a subsequent re-index, `/api/v1/chat/index/status` should report `query_available: true`; the UI should display `CHAT READY · INDEXING` and remain usable. If it does not, verify the existing Qdrant collection and rebuild backend/frontend.
 
-1. Lire les derniers logs backend sans exposer les clés :
+## Chat response is LIMITED
 
-   ```powershell
-   docker compose logs backend --tail 200
-   ```
+`LIMITED` is a safe outcome, not necessarily a bug. Inspect the target-resolution card and technical trace:
 
-2. Vérifier le modèle configuré dans la console du fournisseur, sa clé, ses limites et son état.
-3. Attendre et relancer une seule fois en cas de limite ou surcharge ; `JUDGE_MAX_RETRIES` borne déjà les tentatives automatiques.
-4. Réduire la profondeur de lineage ou le périmètre si l'analyse contient de très nombreux actifs. Le paquet de jugement est déjà compacté et les métadonnées GraphQL brutes sont exclues.
+- `AMBIGUOUS`: provide a platform or exact URN.
+- `NOT_FOUND`: correct the requested asset; schema and lineage tools intentionally were not run.
+- Missing schema/lineage evidence: verify the asset exists in DataHub and the target has that metadata.
+- Missing cited evidence ID: the verifier rejected an otherwise plausible answer.
 
-Groq utilise un JSON Schema strict pour le verdict. Cette contrainte évite les réponses mal formées ; elle ne doit pas être supprimée pour masquer un problème de qualité.
+Clear memory before independent test cases. Normal six-turn memory helps conversational follow-ups but must not be used to claim independent evaluation results.
 
-## `NEEDS_REPAIR` malgré des clés valides
+## NVIDIA advisory critic times out
 
-C'est une décision métier/sécurité, pas une panne technique. Lire :
+The advisory critic is bounded to a compact dossier and a maximum response size. A timeout is surfaced explicitly and cannot change the remediation plan.
 
-- les `critical_errors` ;
-- les `repair_instructions` ;
-- les `audit_rationale` ;
-- la formule de risque, les preuves et les limites de métadonnées.
+1. Confirm the configured model is available to the NVIDIA account.
+2. Prefer a faster available model for a demo if the chosen large model repeatedly times out.
+3. Confirm `NVIDIA_TIMEOUT_SECONDS` is appropriate for the model.
+4. Retry once later; do not treat a failed advisory call as a passing review.
 
-Corriger le changement ou le plan puis créer une nouvelle analyse. Ne choisissez pas un modèle plus permissif pour forcer le double PASS.
+NVIDIA’s endpoint is OpenAI-compatible; the expected base URL is `https://integrate.api.nvidia.com/v1` ([NVIDIA API reference](https://docs.api.nvidia.com/nim/reference/llm-apis)).
 
-## Write-back refusé
+## OpenAI or Groq judge is unavailable
 
-| Message / statut | Signification |
+An unavailable judge never becomes PASS. One unavailable judge produces `AWAITING_HUMAN`; two produce `BLOCKED`.
+
+1. Check backend logs for the safe error type, not the key.
+2. Confirm the model name is enabled in the provider account and quota is available.
+3. Keep `JUDGE_MAX_RETRIES` bounded to control cost.
+4. Groq first attempts strict JSON Schema then JSON-object mode; a provider outage, rate limit, or invalid response after this fallback still remains unavailable.
+
+## Write-back is refused
+
+| Message or state | Meaning |
 |---|---|
-| `DATAHUB_WRITEBACK_ENABLED is false` | protection normale : aucune écriture autorisée |
-| `Unknown server-owned judging run` | `run_id` absent ou non persistant |
-| erreur 422 durant `prepare` | Gate 0 ou double PASS absent |
-| `FAILED` | appel document DataHub échoué après persistence de l'audit |
+| `DATAHUB_WRITEBACK_ENABLED is false` | Normal protection; no write was attempted |
+| Prepare request rejected | Gate 0 or double PASS is absent |
+| `Unknown server-owned judging run` | Invalid or non-persistent run ID |
+| `FAILED` | Document write was attempted only after approval and failed; inspect the audit trail |
 
-Inspecter la proposition et l'audit :
+Read proposal and audit data with:
 
 ```powershell
 Invoke-RestMethod "http://localhost:8000/api/v1/writebacks/<run_id>"
 Invoke-RestMethod "http://localhost:8000/api/v1/writebacks/<run_id>/audit"
 ```
 
-Ne supprimez pas le volume Docker si vous devez conserver l'historique SQLite :
-
-```powershell
-docker compose down
-```
-
-Éviter `docker compose down -v`, qui supprime aussi le volume persistant de l'application.
+Keep `DATAHUB_WRITEBACK_ENABLED=false` for ordinary hackathon demonstrations. Use the dedicated disposable proof only when you explicitly intend to create and supersede a demo Analysis document.
