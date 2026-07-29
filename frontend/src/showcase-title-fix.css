@@ -1,0 +1,2 @@
+/* Keep the second line of the showcase heading as a full-size title, not a button arrow. */
+.showcase-copy h2 span{display:inline;margin:0;font:inherit;font-size:inherit;letter-spacing:inherit;line-height:inherit}.showcase-copy h2 span{color:#8fe7ff}
