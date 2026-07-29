@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.services.run_store import RunStore
+from app.services.run_store import AnalysisStore, RunStore
 from test_judging import judging_request, verdict
 from app.domain.contracts import (
     AggregateDecision,
@@ -35,3 +35,26 @@ def test_judging_run_survives_store_recreation() -> None:
     assert history[0].run_id == run_id
     assert history[0].openai_status == "PASS"
     database_path.unlink()
+
+
+def test_analysis_snapshot_is_server_owned_and_survives_store_recreation() -> None:
+    database_path = Path(__file__).with_name(".analysis-store-test.db")
+    database_path.unlink(missing_ok=True)
+    try:
+        database_url = f"sqlite:///{database_path}"
+        request = judging_request()
+        run_id = AnalysisStore(database_url).save(
+            request.impact_report, request.remediation_plan
+        )
+
+        request.impact_report.risk_assessment.score = 0
+        restored = AnalysisStore(database_url).get(run_id)
+
+        assert restored is not None
+        assert restored.impact_report.risk_assessment.score == 45
+        assert (
+            restored.remediation_plan.source_asset_urn
+            == request.impact_report.request.asset_urn
+        )
+    finally:
+        database_path.unlink(missing_ok=True)

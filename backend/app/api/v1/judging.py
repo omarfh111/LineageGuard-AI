@@ -6,8 +6,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.domain.contracts import JudgingRequest, JudgingRunSummary, StoredJudgingResult
-from app.services.run_store import run_store
+from app.domain.contracts import (
+    JudgingRunSummary,
+    StoredAnalysisJudgingRequest,
+    StoredJudgingResult,
+)
+from app.services.run_store import analysis_store, run_store
 from app.services.judging import (
     JudgeConfigurationError,
     JudgingService,
@@ -20,14 +24,21 @@ JudgingServiceDependency = Annotated[JudgingService, Depends(get_judging_service
 
 @router.post("/evaluate", response_model=StoredJudgingResult)
 async def evaluate_report(
-    request: JudgingRequest,
+    request: StoredAnalysisJudgingRequest,
     service: JudgingServiceDependency,
 ) -> StoredJudgingResult:
-    """Run Gate 0 then two independent, bounded judge calls."""
+    """Judge only a server-owned deterministic analysis snapshot."""
 
     try:
-        result = await service.evaluate(request)
-        return StoredJudgingResult(run_id=run_store.save(request, result), result=result)
+        judging_request = analysis_store.get(
+            request.analysis_run_id, request.repair_cycles
+        )
+        if judging_request is None:
+            raise HTTPException(404, "Unknown server-owned analysis run")
+        result = await service.evaluate(judging_request)
+        return StoredJudgingResult(
+            run_id=run_store.save(judging_request, result), result=result
+        )
     except JudgeConfigurationError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 

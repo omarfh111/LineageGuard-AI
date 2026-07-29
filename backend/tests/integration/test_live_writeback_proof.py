@@ -59,8 +59,12 @@ async def test_live_document_writeback_with_explicit_human_approval(tmp_path) ->
     report = request.impact_report
     report.request.asset_urn = asset.urn
     report.evidence_bundle.source_asset_urn = asset.urn
-    report.evidence_bundle.items[0].asset_urn = asset.urn
-    report.evidence_bundle.items[1].asset_urn = asset.urn
+    for item in report.evidence_bundle.items:
+        item.asset_urn = asset.urn
+        if "source_asset_urn" in item.raw_reference:
+            item.raw_reference["source_asset_urn"] = asset.urn
+        if "downstream_asset_urn" in item.raw_reference:
+            item.raw_reference["downstream_asset_urn"] = asset.urn
     report.impacted_assets[0].asset_urn = asset.urn
     report.impacted_assets[0].lineage_path = [asset.urn]
     request.remediation_plan = DeterministicRemediationPlanner().plan(report)

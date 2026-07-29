@@ -1,124 +1,114 @@
-# Référence API
+# API reference
 
-Base URL locale : `http://localhost:8000`. L'interface OpenAPI interactive est disponible sur <http://localhost:8000/docs>.
+Base URL: `http://localhost:8000`. The generated OpenAPI contract at <http://localhost:8000/docs> is the executable source of request and response schemas. This page explains the intended safe flows.
 
-## Lecture DataHub
+## Runtime and DataHub reads
 
-| Route | Paramètres | Résultat |
+| Method | Route | Purpose | Side effect |
+|---|---|---|---|
+| `GET` | `/api/v1/health` | Non-secret configuration health | None |
+| `GET` | `/api/v1/datahub/search?query=` | Read-only MCP metadata search | None |
+| `GET` | `/api/v1/datahub/schema?asset_urn=` | Read-only schema lookup | None |
+| `GET` | `/api/v1/datahub/lineage?asset_urn=&direction=&max_hops=` | Bounded lineage lookup | None |
+| `GET` | `/api/v1/datahub/catalog/cache` | Shared 3D graph and freshness state | None |
+| `POST` | `/api/v1/datahub/catalog/cache/refresh` | Request a background refresh | None |
+| `GET` | `/api/v1/datahub/catalog/search` | Bounded legacy catalog projection | None |
+| `GET` | `/api/v1/datahub/catalog/expand` | Bounded graph expansion | None |
+| `GET` | `/api/v1/datahub/catalog/snapshot` | Paged legacy graph projection | None |
+
+The DataHub bridge enforces a server-side allowlist. These routes cannot call write tools.
+
+## Impact workflow
+
+The frontend uses grouped workflow routes. The lower-level read and planning
+routes remain available for controlled API-level testing. Both judging routes
+accept only a server-owned `analysis_run_id`; they do not accept a browser copy
+of an impact report.
+
+| Method | Route | Purpose |
 |---|---|---|
-| `GET /api/v1/datahub/search` | `query` | Résultat brut de l'outil MCP `search` |
-| `GET /api/v1/datahub/schema` | `asset_urn` | Schéma via `list_schema_fields` |
-| `GET /api/v1/datahub/lineage` | `asset_urn`, `direction`, `max_hops` (1–5) | Lineage borné via `get_lineage` |
+| `GET` | `/api/v1/workflows/graph` | Public workflow visualization and tracing state |
+| `POST` | `/api/v1/workflows/analyze` | Build impact report and deterministic plan |
+| `POST` | `/api/v1/workflows/critique` | Optional NVIDIA advisory critique |
+| `POST` | `/api/v1/workflows/judge` | Reload a server-owned analysis, run Gate 0, then independent OpenAI/Groq review |
+| `POST` | `/api/v1/judges/evaluate` | Lower-level equivalent using the same server-owned analysis reference |
+| `GET` | `/api/v1/judges/history` | Persisted non-secret judging summaries |
 
-Exemple :
-
-```powershell
-Invoke-RestMethod 'http://localhost:8000/api/v1/datahub/search?query=orders'
-```
-
-Ces routes ne peuvent appeler que les outils MCP de lecture placés dans l'allowlist. Les outils de mutation restent désactivés.
-
-## Rapport et plan déterministes
-
-### Impact
-
-`POST /api/v1/analyses/impact`
-
-Entrée minimale :
+Example request body:
 
 ```json
 {
   "asset_urn": "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.orders,PROD)",
   "change_type": "ADD_COLUMN",
   "column_name": "lineageguard_demo_note",
-  "reason": "Démonstration contrôlée du workflow.",
+  "reason": "Controlled LineageGuard demonstration.",
   "environment": "PRODUCTION",
   "lineage_depth": 2,
   "column_nullable": true
 }
 ```
 
-`change_type` accepte `ADD_COLUMN`, `RENAME_COLUMN`, `CHANGE_COLUMN_TYPE` et `DROP_COLUMN`. Les changements rename/type exigent aussi `new_value` ; les changements autres qu'add exigent `column_name`.
-
-```powershell
-$report = Invoke-RestMethod -Method Post `
-  -Uri 'http://localhost:8000/api/v1/analyses/impact' `
-  -ContentType 'application/json' `
-  -InFile .\examples\drop-column-orders.json
-```
-
-La réponse contient `evidence_bundle`, `impacted_assets`, `risk_assessment`, `missing_metadata` et `confidence`. `impact_type=POTENTIAL_SCHEMA_IMPACT` signale une dépendance démontrée, pas une rupture de schéma déjà prouvée.
-
-### Plan
-
-`POST /api/v1/remediations/plan` reçoit le rapport inchangé :
-
-```powershell
-$plan = Invoke-RestMethod -Method Post `
-  -Uri 'http://localhost:8000/api/v1/remediations/plan' `
-  -ContentType 'application/json' `
-  -Body ($report | ConvertTo-Json -Depth 30)
-```
-
-Les champs `execution_status` des plans et rollbacks restent `NOT_EXECUTED`. Une compatibilité non démontrée par contrat/consommateur est renvoyée comme `null`, jamais comme un `true` artificiel.
-
-## Critique et juges
-
-### Critique NVIDIA
-
-`POST /api/v1/debates/critique` reçoit :
+The result includes `analysis_run_id`, `impact_report`, `remediation_plan`, and
+a public workflow graph. The plan and rollback are instructions only and remain
+`NOT_EXECUTED`. Subsequent judging uses:
 
 ```json
-{ "impact_report": { "...": "rapport" }, "remediation_plan": { "...": "plan" } }
+{
+  "analysis_run_id": "server-generated-analysis-id",
+  "repair_cycles": 0
+}
 ```
 
-La réponse contient `provider`, `model`, `summary`, `issues`, `recommended_revisions` et `confidence`. C'est un avis ; aucune modification du plan n'est effectuée.
+## Agentic RAG and MCP
 
-### Double revue
+| Method | Route | Purpose | Side effect |
+|---|---|---|---|
+| `GET` | `/api/v1/chat/index/status` | Qdrant state and `query_available` | None |
+| `POST` | `/api/v1/chat/index/ingest` | Start metadata-only Qdrant ingestion | Writes Qdrant only |
+| `POST` | `/api/v1/chat/query` | Agentic RAG plus live MCP verification | Read-only DataHub calls only |
+| `GET` | `/api/v1/chat/memory/{session_id}` | Session memory metadata | None |
+| `DELETE` | `/api/v1/chat/memory/{session_id}` | Erase session memory | Deletes local memory only |
+| `POST` | `/api/v1/chat/execute-analysis` | Confirmed handoff to impact workflow | Read-only DataHub calls only |
 
-`POST /api/v1/judges/evaluate` reçoit le même paquet avec `repair_cycles` :
+Example query:
 
-```powershell
-$judgingRequest = @{
-  impact_report = $report
-  remediation_plan = $plan
-  repair_cycles = 0
-} | ConvertTo-Json -Depth 30
-
-$judging = Invoke-RestMethod -Method Post `
-  -Uri 'http://localhost:8000/api/v1/judges/evaluate' `
-  -ContentType 'application/json' `
-  -Body $judgingRequest
+```json
+{
+  "message": "What is the schema of the Snowflake orders dataset?",
+  "session_id": "browser-generated-random-id",
+  "memory_enabled": true
+}
 ```
 
-La réponse contient un `run_id` serveur et :
+| Response field | Meaning |
+|---|---|
+| `target_resolution` | Exact target selection, ambiguity, no match, or no target needed |
+| `citations` | RAG candidates and/or MCP-verified citations |
+| `evidence` | Named evidence records used by the verifier |
+| `verification` | Deterministic validation result and blocking issues |
+| `action_proposal` | `NONE`, `ANALYZE_IMPACT`, or `HITL_WRITEBACK` |
+| `agent_trace` | Public execution trace, never private reasoning |
+| `model_usage` | Safe token/cost telemetry when available |
 
-- `deterministic_validation` (Gate 0) ;
-- `openai_verdict` et `groq_verdict` ;
-- scores, erreurs, réparation, `audit_rationale` et confiance ;
-- `aggregate_decision`.
+An index can be `RUNNING` while `query_available=true`: a prior Qdrant collection is usable and the chat should remain available during re-indexing.
 
-`GET /api/v1/judges/history?limit=12` affiche des résumés persistants, pas les prompts ni les secrets.
+## HITL document write-back
 
-## HITL write-back
-
-Les routes suivantes restent protégées par le statut de la revue et les contrôles d'idempotence.
-
-| Route | Corps | Règle |
+| Method | Route | Rule |
 |---|---|---|
-| `POST /api/v1/writebacks/prepare` | `run_id`, `idempotency_key` | Requiert double PASS |
-| `GET /api/v1/writebacks/{run_id}` | — | Lit proposition/snapshot |
-| `GET /api/v1/writebacks/{run_id}/audit` | — | Lit audit ordonné |
-| `POST /api/v1/writebacks/{run_id}/approve` | `decision`, `comment`, `idempotency_key` | Décision humaine |
-| `POST /api/v1/writebacks/{run_id}/rollback` | `decision=APPROVE_ROLLBACK`, commentaire, clé | Seulement après write-back terminé |
+| `POST` | `/api/v1/writebacks/prepare` | Requires a server-owned double-PASS judging run and idempotency key |
+| `GET` | `/api/v1/writebacks/{run_id}` | Read proposal and immutable snapshot |
+| `GET` | `/api/v1/writebacks/{run_id}/audit` | Read ordered audit events |
+| `POST` | `/api/v1/writebacks/{run_id}/approve` | Human approval, revision, or rejection |
+| `POST` | `/api/v1/writebacks/{run_id}/rollback` | Separate approval to supersede a completed document |
 
-Exemple de préparation :
+The sole write action is `save_document` for an Analysis document. An approval fails safely when `DATAHUB_WRITEBACK_ENABLED=false`; it does not silently change DataHub.
 
-```powershell
-$proposal = Invoke-RestMethod -Method Post `
-  -Uri 'http://localhost:8000/api/v1/writebacks/prepare' `
-  -ContentType 'application/json' `
-  -Body (@{ run_id = $judging.run_id; idempotency_key = [guid]::NewGuid().ToString() } | ConvertTo-Json)
-```
+## HTTP behaviour
 
-Une approbation avec `DATAHUB_WRITEBACK_ENABLED=false` échoue volontairement avant toute mutation. C'est le comportement sécurisé attendu.
+- `200` / `202`: normal read or accepted background operation.
+- `422`: validation failed or explicit confirmation is missing.
+- `503`: DataHub, Qdrant, or optional provider configuration is unavailable.
+- `500`: unexpected server condition; inspect backend logs without copying secrets.
+
+Use `/docs` for exact Pydantic contracts rather than reconstructing full request and response objects from this overview.

@@ -15,6 +15,7 @@ async def test_langgraph_analysis_path_returns_plan_and_safe_visualization() -> 
     ).analyze(ChangeRequest.model_validate(request_payload()))
 
     statuses = {node.id: node.status for node in execution.graph.nodes}
+    assert execution.analysis_run_id
     assert execution.impact_report.blast_radius == 1
     assert execution.remediation_plan.execution_status == "NOT_EXECUTED"
     assert statuses["request"] == "COMPLETED"
@@ -34,6 +35,7 @@ def test_workflow_endpoint_uses_the_read_only_langgraph_path() -> None:
 
     assert response.status_code == 200
     body = response.json()
+    assert body["analysis_run_id"]
     assert body["remediation_plan"]["execution_status"] == "NOT_EXECUTED"
     assert {node["id"] for node in body["graph"]["nodes"]} == {
         "request", "metadata", "impact", "plan", "critic", "judges", "hitl"

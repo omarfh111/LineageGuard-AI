@@ -80,7 +80,6 @@ class ImpactAnalysisService:
             )
         ]
         impacts: list[ImpactItem] = []
-        missing_metadata: list[str] = []
         seen_urns: set[str] = set()
 
         for index, result in enumerate(search_results, start=1):
@@ -97,10 +96,7 @@ class ImpactAnalysisService:
             evidence_id = f"ev_lineage_{index:03d}"
             owner_urns = _owner_urns(entity)
             platform_urn = _platform_urn(entity)
-            if not owner_urns:
-                missing_metadata.append(f"{asset_urn}: owners missing")
-            if not platform_urn:
-                missing_metadata.append(f"{asset_urn}: platform missing")
+            criticality = _criticality(entity)
             evidence.append(
                 EvidenceItem(
                     evidence_id=evidence_id,
@@ -111,6 +107,9 @@ class ImpactAnalysisService:
                         "source_asset_urn": request.asset_urn,
                         "downstream_asset_urn": asset_urn,
                         "degree": result.get("degree"),
+                        "owner_urns": owner_urns,
+                        "platform_urn": platform_urn,
+                        "criticality": criticality.value,
                     },
                     retrieved_at=retrieved_at,
                 )
@@ -122,19 +121,41 @@ class ImpactAnalysisService:
                     lineage_path=[request.asset_urn, asset_urn],
                     owner_urns=owner_urns,
                     platform_urn=platform_urn,
-                    criticality=_criticality(entity),
+                    criticality=criticality,
                     evidence_ids=[evidence_id],
                 )
             )
 
         total_downstreams = downstream.get("total") if isinstance(downstream, dict) else None
-        if isinstance(total_downstreams, int) and total_downstreams > len(impacts):
-            missing_metadata.append(
-                "Lineage response is truncated: "
-                f"{len(impacts)} of {total_downstreams} downstream assets were returned"
-            )
+        observed_total = (
+            total_downstreams
+            if isinstance(total_downstreams, int) and total_downstreams >= len(impacts)
+            else len(impacts)
+        )
+        evidence.insert(
+            1,
+            EvidenceItem(
+                evidence_id="ev_lineage_summary",
+                tool="get_lineage",
+                asset_urn=request.asset_urn,
+                claim_type=ClaimType.DOWNSTREAM_DEPENDENCY,
+                raw_reference={
+                    "source_asset_urn": request.asset_urn,
+                    "returned_assets": len(impacts),
+                    "total_downstreams": observed_total,
+                    "direction": "DOWNSTREAM",
+                    "max_hops": request.lineage_depth,
+                },
+                retrieved_at=retrieved_at,
+            ),
+        )
 
-        risk_assessment = _calculate_risk(request, impacts, missing_metadata)
+        missing_metadata = expected_missing_metadata(
+            impacts, total_downstreams=observed_total
+        )
+        risk_assessment = calculate_risk_assessment(
+            request, impacts, missing_metadata
+        )
         confidence = round(max(0.0, 1 - risk_assessment.components.metadata_uncertainty / 100), 2)
         return ImpactReport(
             request=request,
@@ -183,11 +204,32 @@ def _criticality(entity: dict[str, Any]) -> Criticality:
     return Criticality.MEDIUM
 
 
-def _calculate_risk(
+def expected_missing_metadata(
+    impacts: list[ImpactItem], *, total_downstreams: int
+) -> list[str]:
+    """Reconstruct the only metadata-uncertainty facts accepted by Gate 0."""
+
+    missing: list[str] = []
+    for impact in impacts:
+        if not impact.owner_urns:
+            missing.append(f"{impact.asset_urn}: owners missing")
+        if not impact.platform_urn:
+            missing.append(f"{impact.asset_urn}: platform missing")
+    if total_downstreams > len(impacts):
+        missing.append(
+            "Lineage response is truncated: "
+            f"{len(impacts)} of {total_downstreams} downstream assets were returned"
+        )
+    return missing
+
+
+def calculate_risk_assessment(
     request: ChangeRequest,
     impacts: list[ImpactItem],
     missing_metadata: list[str],
 ) -> RiskAssessment:
+    """Calculate risk only from normalized request and observed report facts."""
+
     severity = _change_severity(request)
     blast_radius = min(100, len(impacts) * 10)
     criticality_scores = {

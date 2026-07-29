@@ -29,12 +29,12 @@ from app.domain.contracts import (
     WorkflowVisualization,
 )
 from app.services.impact_analysis import ImpactAnalysisService
-from app.services.judging import GroqJudge, JudgingService, OpenAIJudge
+from app.services.judging import JudgingService
 from app.services.metadata_investigator import MetadataInvestigation, MetadataInvestigator
 from app.services.nvidia_critic import NvidiaCritic
 from app.services.request_interpreter import RequestInterpreter
 from app.services.remediation_planner import DeterministicRemediationPlanner
-from app.services.run_store import run_store
+from app.services.run_store import analysis_store, run_store
 
 
 class WorkflowState(TypedDict):
@@ -77,9 +77,12 @@ class LineageGuardWorkflow:
             },
             {"run_name": "lineageguard-impact-plan", "tags": ["lineageguard", "read-only"]},
         )
+        report = state["impact_report"]
+        plan = state["remediation_plan"]
         return WorkflowAnalysisExecution(
-            impact_report=state["impact_report"],
-            remediation_plan=state["remediation_plan"],
+            analysis_run_id=analysis_store.save(report, plan),
+            impact_report=report,
+            remediation_plan=plan,
             graph=self.visualization(state["node_statuses"]),
         )
 
@@ -201,9 +204,7 @@ class LineageGuardWorkflow:
         return {"critique": critique, "node_statuses": statuses}
 
     async def _run_judges(self, state: WorkflowState) -> dict[str, object]:
-        service = self._judges or JudgingService(
-            OpenAIJudge(self._settings), GroqJudge(self._settings)
-        )
+        service = self._judges or JudgingService(settings=self._settings)
         request = state["judging_request"]
         result: JudgingResult = await service.evaluate(request)
         statuses = dict(state["node_statuses"])

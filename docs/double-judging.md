@@ -1,67 +1,116 @@
-# Double jugement indépendant
+# Independent judging
 
-`POST /api/v1/judges/evaluate` reçoit un rapport d'impact et un plan de remédiation. Il applique Gate 0 avant tout appel externe, puis lance OpenAI et Groq indépendamment et en concurrence.
+The review stage is a safety control, not an automatic approval mechanism. It evaluates a deterministic impact report and remediation plan after DataHub reads have already completed.
 
 ## Gate 0
 
-Gate 0 refuse le dossier si l'un des invariants suivants échoue :
+Gate 0 is deterministic and runs before any external provider is constructed or
+called. The browser submits only the `analysis_run_id`; the backend reloads the
+impact report and plan from its server-owned SQLite snapshot. Gate 0 then blocks
+the request when any of these invariants fail:
 
-- chaque actif impacté référence des preuves présentes ;
-- les URN et chemins de lineage sont cohérents avec l'actif source ;
-- la colonne demandée est soutenue par les preuves de schéma lorsque nécessaire ;
-- le score de risque correspond au recalcul déterministe ;
-- le plan et le rollback déclarent `NOT_EXECUTED`.
+- evidence IDs are unique and every impacted asset references target-owned
+  lineage evidence;
+- source URN, destination URN, lineage summary, blast radius, and lineage paths
+  are internally consistent;
+- required schema evidence supports the requested column or change;
+- missing-metadata facts are reconstructed from observed owners, platforms, and
+  the structured lineage total;
+- every risk component, score, level, explanation, and confidence value matches
+  an independent deterministic reconstruction;
+- remediation steps and tests cannot introduce assets outside the observed
+  report;
+- remediation and rollback plans both declare `NOT_EXECUTED`.
 
-Si Gate 0 échoue, aucun fournisseur externe n'est appelé.
+If Gate 0 fails, OpenAI and Groq are not called. NVIDIA remains a separate,
+manually triggered advisory stage and cannot approve the report.
 
-## Paquet envoyé aux juges
-
-Les deux juges reçoivent exactement le même dossier compact : demande, score et formule, actifs/chemins de lineage, index de preuves, limites de métadonnées, plan et rollback. Les réponses GraphQL brutes sont exclues afin de réduire la surface d'injection et les dépassements de quota. Le rapport complet reste persistant côté serveur pour la revue humaine.
-
-OpenAI se concentre sur le grounding factuel ; Groq se concentre sur la correction technique et la sécurité. Aucun juge n'a un outil DataHub ou une permission d'écriture, et aucun ne reçoit le verdict de l'autre.
+## Review flow
 
 ```mermaid
 flowchart TD
-    R[Impact report + remediation plan] --> G{Gate 0}
-    G -->|invalid| B[BLOCKED - no provider call]
-    G -->|valid| P[Same compact evidence package]
-    P --> O[OpenAI: grounding]
-    P --> Q[Groq: technical and safety]
-    O --> A[Deterministic aggregation]
-    Q --> A
-    A -->|two threshold PASS| F[FINALIZE_READ_ONLY]
-    A -->|FAIL| N[NEEDS_REPAIR]
-    A -->|provider unavailable| H[AWAITING_HUMAN or BLOCKED]
+    Input["Server-owned analysis_run_id"] --> Snapshot["Reload impact report + plan"]
+    Snapshot --> Gate{"Deterministic Gate 0 reconstruction"}
+    Gate -->|"invalid"| Blocked["BLOCKED: no provider call"]
+    Gate -->|"valid"| Packet["Bounded evidence dossier"]
+    Packet --> O["OpenAI: factual grounding"]
+    Packet --> G["Groq: technical correctness and safety"]
+    O --> Aggregate["Deterministic aggregation"]
+    G --> Aggregate
+    Aggregate -->|"two threshold PASS"| Final["FINALIZE_READ_ONLY"]
+    Aggregate -->|"repairable disagreement"| Repair["NEEDS_REPAIR"]
+    Aggregate -->|"provider unavailable"| Human["AWAITING_HUMAN or BLOCKED"]
 ```
+
+Both judges receive the same compact dossier: request, risk assessment, bounded
+impacts, schema and lineage-summary evidence, missing-metadata counts/samples,
+and the remediation/rollback plan. Repeated paths and target URN lists are
+represented once through reconstructible target scopes (`SOURCE_ASSET`,
+`ALL_IMPACTED_ASSETS`, or `SOURCE_AND_ALL_IMPACTED_ASSETS`). Raw DataHub GraphQL
+responses are excluded to reduce cost, prompt-injection surface, and context
+overflow. Neither judge receives the other judge's verdict or has a DataHub
+tool.
+
+## Provider behaviour
+
+| Provider | Role | Structured output handling |
+|---|---|---|
+| NVIDIA Build | Advisory critique only | Bounded JSON response; timeout surfaces as an advisory failure and never changes a plan |
+| OpenAI | Factual-grounding judge | JSON verdict parsed against the required contract |
+| Groq | Technical/safety judge | JSON Schema is attempted first; JSON-object fallback is used only if structured mode is rejected, then the same strict parser and pass thresholds apply. GPT-OSS uses low, hidden reasoning and a bounded 1,200-token verdict budget. |
+
+The Groq fallback does **not** convert an unavailable judge into a PASS. Timeouts, malformed content after retries, and provider errors return an unavailable verdict and force human review or block the run according to the aggregation table.
+
+Provider diagnostics log only exception type, HTTP status, and provider error
+code. Prompts, metadata, response bodies, and credentials are never logged.
+
+## Live acceptance proof
+
+The hardened path was exercised against the local DataHub catalog with a
+read-only `DROP_COLUMN` analysis for the Snowflake `orders.order_status` field:
+
+- deterministic Gate 0: `PASS`;
+- OpenAI `gpt-4.1-mini`: `PASS`;
+- Groq `openai/gpt-oss-20b`: `PASS`;
+- aggregate decision: `FINALIZE_READ_ONLY`;
+- write-back proposals and audit events for the judging run: `0`.
+
+This acceptance result proves the read/analyze/judge path only. It does not
+claim that a DataHub mutation was executed.
+
+## Pass threshold and aggregation
+
+A judge must return `PASS`, no critical errors, `grounding >= 4`, `technical_correctness >= 4`, `safety >= 4`, average score `>= 4`, and confidence `>= 0.75`.
+
+| Result | Aggregate decision |
+|---|---|
+| Both independent judges meet threshold | `FINALIZE_READ_ONLY` |
+| At least one valid FAIL and repair cycles remain | `NEEDS_REPAIR` |
+| Repair-cycle limit reached | `AWAITING_HUMAN` |
+| One judge unavailable | `AWAITING_HUMAN` |
+| Both judges unavailable | `BLOCKED` |
+
+`FINALIZE_READ_ONLY` permits preparation of an HITL proposal only. It never writes to DataHub by itself.
+
+## Auditable rationale, not chain-of-thought
+
+Judge responses expose concise `audit_rationale`, critical errors, non-critical issues, repair instructions, scores, and confidence. These are observable review reasons and may cite evidence IDs. Private chain-of-thought and hidden provider reasoning are never requested, stored, or shown in the UI.
 
 ## Configuration
 
-Conserver les secrets dans `.env` seulement :
-
 ```env
-OPENAI_API_KEY=...
+OPENAI_API_KEY=
 OPENAI_JUDGE_MODEL=gpt-4.1-mini
-GROQ_API_KEY=...
+GROQ_API_KEY=
 GROQ_JUDGE_MODEL=openai/gpt-oss-20b
 JUDGE_TEMPERATURE=0
 JUDGE_TIMEOUT_SECONDS=60
 JUDGE_MAX_RETRIES=1
+
+NVIDIA_API_KEY=
+NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
+NVIDIA_CRITIC_MODEL=
+NVIDIA_TIMEOUT_SECONDS=90
 ```
 
-Groq utilise un JSON Schema strict avec les champs `verdict`, `scores`, `critical_errors`, `non_critical_issues`, `repair_instructions`, `audit_rationale` et `confidence`. Cette contrainte réduit les sorties JSON invalides. OpenAI et Groq doivent tous deux franchir les seuils ; une réponse simplement syntaxiquement valide ne suffit pas.
-
-## Justification auditable, pas chaîne de pensée
-
-Chaque verdict comporte `audit_rationale`, une courte liste de justifications observables. Ces lignes peuvent référencer les identifiants de preuve, les limites ou les conditions du plan. Les chaînes de pensée privées, traces de raisonnement détaillées et contenus cachés des fournisseurs ne sont ni demandés, ni affichés, ni persistés.
-
-## Politique d'agrégation
-
-| Résultat | Décision |
-|---|---|
-| Deux PASS aux seuils | `FINALIZE_READ_ONLY` |
-| Au moins un FAIL avant la limite de cycles | `NEEDS_REPAIR` |
-| Limite de deux cycles atteinte sans double PASS | `AWAITING_HUMAN` |
-| Un juge `ERROR` ou `TIMEOUT` | `AWAITING_HUMAN` |
-| Deux juges indisponibles | `BLOCKED` |
-
-Un résultat `FAIL` ou `NEEDS_REPAIR` est une information de sécurité utile. Il ne faut pas remplacer un juge pour rendre le verdict artificiellement favorable.
+Choose only models available to the corresponding account. A changed model is a material evaluation change: record it beside every benchmark result and do not compare its score directly with a previous model without disclosure.

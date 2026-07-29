@@ -8,7 +8,13 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.core.config import get_settings
-from app.domain.contracts import JudgingRequest, JudgingResult, JudgingRunSummary
+from app.domain.contracts import (
+    ImpactReport,
+    JudgingRequest,
+    JudgingResult,
+    JudgingRunSummary,
+    RemediationPlan,
+)
 
 
 def sqlite_path(database_url: str) -> str:
@@ -93,4 +99,64 @@ class RunStore:
         return summaries
 
 
+class AnalysisStore:
+    """Persist immutable server-generated analysis inputs for later judging."""
+
+    def __init__(self, database_url: str | None = None) -> None:
+        self._path = sqlite_path(database_url or get_settings().database_url)
+        if self._path != ":memory:":
+            Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS analysis_runs (
+                    run_id TEXT PRIMARY KEY,
+                    impact_report_json TEXT NOT NULL,
+                    remediation_plan_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self._path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def save(self, report: ImpactReport, plan: RemediationPlan) -> str:
+        run_id = str(uuid4())
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                """
+                INSERT INTO analysis_runs(
+                    run_id, impact_report_json, remediation_plan_json
+                ) VALUES (?, ?, ?)
+                """,
+                (run_id, report.model_dump_json(), plan.model_dump_json()),
+            )
+        return run_id
+
+    def get(self, run_id: str, repair_cycles: int = 0) -> JudgingRequest | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT impact_report_json, remediation_plan_json
+                FROM analysis_runs WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return JudgingRequest(
+            impact_report=ImpactReport.model_validate_json(
+                row["impact_report_json"]
+            ),
+            remediation_plan=RemediationPlan.model_validate_json(
+                row["remediation_plan_json"]
+            ),
+            repair_cycles=repair_cycles,
+        )
+
+
 run_store = RunStore()
+analysis_store = AnalysisStore()

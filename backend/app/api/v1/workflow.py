@@ -10,21 +10,27 @@ from app.datahub.mcp_client import DataHubConfigurationError, DataHubMcpClient, 
 from app.domain.contracts import (
     ChangeRequest,
     CritiqueRequest,
-    JudgingRequest,
+    StoredAnalysisJudgingRequest,
     WorkflowAnalysisExecution,
     WorkflowCritiqueExecution,
     WorkflowJudgingExecution,
     WorkflowVisualization,
 )
-from app.services.judging import JudgeConfigurationError
+from app.services.judging import (
+    JudgeConfigurationError,
+    JudgingService,
+    get_judging_service,
+)
 from app.services.impact_analysis import AnalysisInputError
 from app.services.metadata_investigator import MetadataInvestigationError
 from app.services.nvidia_critic import NvidiaConfigurationError, NvidiaCriticError
+from app.services.run_store import analysis_store
 from app.services.workflow_graph import LineageGuardWorkflow
 from app.services.catalog_cache import catalog_cache
 
 router = APIRouter(prefix="/workflows", tags=["workflow"])
 DataHubClientDependency = Annotated[DataHubMcpClient, Depends(get_datahub_client)]
+JudgingServiceDependency = Annotated[JudgingService, Depends(get_judging_service)]
 
 
 @router.get("/graph", response_model=WorkflowVisualization)
@@ -61,8 +67,16 @@ async def critique(request: CritiqueRequest) -> WorkflowCritiqueExecution:
 
 
 @router.post("/judge", response_model=WorkflowJudgingExecution)
-async def judge(request: JudgingRequest) -> WorkflowJudgingExecution:
+async def judge(
+    request: StoredAnalysisJudgingRequest,
+    service: JudgingServiceDependency,
+) -> WorkflowJudgingExecution:
     try:
-        return await LineageGuardWorkflow().judge(request)
+        judging_request = analysis_store.get(
+            request.analysis_run_id, request.repair_cycles
+        )
+        if judging_request is None:
+            raise HTTPException(404, "Unknown server-owned analysis run")
+        return await LineageGuardWorkflow(judges=service).judge(judging_request)
     except JudgeConfigurationError as error:
         raise HTTPException(503, str(error)) from error

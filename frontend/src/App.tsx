@@ -1,5 +1,6 @@
 import { FormEvent, Fragment, lazy, Suspense, useEffect, useMemo, useState } from "react";
 import "./styles.css";
+import "./ux.css";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const demoAsset = "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.orders,PROD)";
@@ -22,9 +23,9 @@ type CatalogEdge = { source_urn: string; target_urn: string; direction: string; 
 type CatalogGraph = { nodes: CatalogNode[]; edges: CatalogEdge[]; truncated: boolean };
 type CatalogCacheStatus = { state: "IDLE" | "RUNNING" | "READY" | "STALE" | "FAILED"; loaded_assets: number; loaded_edges: number; message: string; last_updated_at?: string | null; refresh_reason?: string | null };
 type CatalogCacheSnapshot = { status: CatalogCacheStatus; graph: CatalogGraph };
-type RagStatus = { state: "IDLE" | "RUNNING" | "COMPLETED" | "FAILED"; indexed_assets: number; total_assets: number; message: string };
+type RagStatus = { state: "IDLE" | "RUNNING" | "COMPLETED" | "FAILED"; indexed_assets: number; total_assets: number; message: string; query_available: boolean };
 type ChatMemory = { session_id?: string | null; enabled: boolean; message_count: number; max_turns: number; last_updated_at?: string | null };
-type ChatReply = { answer: string; citations: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null; source: string; score?: number | null }>; verification_note: string; verification?: { passed: boolean; checks: string[]; issues: string[] } | null; evidence: Array<{ id: string; kind: string; asset_urn: string; summary: string; facts: string[] }>; action_proposal: { action: "NONE" | "ANALYZE_IMPACT" | "HITL_WRITEBACK"; requires_confirmation: boolean; reason: string; required_fields: string[] }; agent_trace: Array<{ id: string; label: string; status: string; detail: string }>; memory?: ChatMemory | null; model_usage?: { model?: string | null; input_tokens: number; output_tokens: number; total_tokens: number; estimated_cost_usd?: number | null } | null };
+type ChatReply = { answer: string; citations: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null; source: string; score?: number | null }>; verification_note: string; verification?: { passed: boolean; checks: string[]; issues: string[] } | null; evidence: Array<{ id: string; kind: string; asset_urn: string; summary: string; facts: string[] }>; action_proposal: { action: "NONE" | "ANALYZE_IMPACT" | "HITL_WRITEBACK"; requires_confirmation: boolean; reason: string; required_fields: string[] }; target_resolution?: { status: "NOT_REQUIRED" | "RESOLVED" | "AMBIGUOUS" | "NOT_FOUND"; detail: string; targets: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null }> } | null; active_verified_asset?: { urn: string; label: string; entity_type: string; platform_urn?: string | null } | null; agent_trace: Array<{ id: string; label: string; status: string; detail: string }>; memory?: ChatMemory | null; model_usage?: { model?: string | null; input_tokens: number; output_tokens: number; total_tokens: number; estimated_cost_usd?: number | null } | null };
 
 async function request<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, { method: body ? "POST" : "GET", headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });
@@ -60,6 +61,8 @@ function statusTone(value?: string) {
 }
 
 export default function App() {
+  const [page, setPage] = useState(() => window.location.hash.replace("#", "") || "accueil");
+  const [isLoading, setIsLoading] = useState(true);
   const [health, setHealth] = useState<Health | null>(null);
   const [assetUrn, setAssetUrn] = useState(demoAsset);
   const [changeType, setChangeType] = useState<ChangeType>("ADD_COLUMN");
@@ -69,12 +72,14 @@ export default function App() {
   const [depth, setDepth] = useState(2);
   const [impact, setImpact] = useState<ImpactReport | null>(null);
   const [plan, setPlan] = useState<RemediationPlan | null>(null);
+  const [analysisRunId, setAnalysisRunId] = useState<string | null>(null);
   const [critique, setCritique] = useState<Critique | null>(null);
   const [judging, setJudging] = useState<StoredJudging | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [history, setHistory] = useState<RunSummary[]>([]);
   const [workflowGraph, setWorkflowGraph] = useState<WorkflowGraph | null>(null);
   const [catalogQuery, setCatalogQuery] = useState("");
+  const [catalogSearchTerm, setCatalogSearchTerm] = useState("");
   const [catalogGraph, setCatalogGraph] = useState<CatalogGraph | null>(null);
   const [catalogCache, setCatalogCache] = useState<CatalogCacheStatus | null>(null);
   const [catalogOffset, setCatalogOffset] = useState(0);
@@ -93,6 +98,17 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setIsLoading(false), 850);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  function navigate(next: string) {
+    setPage(next);
+    window.history.replaceState(null, "", `#${next}`);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   useEffect(() => {
     request<Health>("/api/v1/health").then(setHealth).catch(() => setHealth(null));
@@ -118,9 +134,16 @@ export default function App() {
   const payload = useMemo(() => ({ asset_urn: assetUrn.trim(), change_type: changeType, column_name: columnName.trim() || undefined, new_value: changeNeedsValue ? newValue.trim() : undefined, reason: reason.trim(), environment: "PRODUCTION", lineage_depth: depth, column_nullable: changeType === "ADD_COLUMN" ? true : undefined, type_change_compatible: changeType === "CHANGE_COLUMN_TYPE" ? false : undefined }), [assetUrn, changeType, columnName, newValue, reason, depth, changeNeedsValue]);
   const catalogTypes = useMemo(() => [...new Set(catalogGraph?.nodes.map((node) => node.entity_type) ?? [])].sort(), [catalogGraph]);
   const catalogPlatforms = useMemo(() => [...new Set((catalogGraph?.nodes.map((node) => node.platform_urn).filter(Boolean) ?? []) as string[])].sort(), [catalogGraph]);
-  const visibleCatalogNodes = useMemo(() => (catalogGraph?.nodes ?? []).filter((node) => (catalogTypeFilter === "ALL" || node.entity_type === catalogTypeFilter) && (catalogPlatformFilter === "ALL" || node.platform_urn === catalogPlatformFilter)), [catalogGraph, catalogTypeFilter, catalogPlatformFilter]);
+  const visibleCatalogNodes = useMemo(() => {
+    const term = catalogSearchTerm.trim().toLocaleLowerCase();
+    return (catalogGraph?.nodes ?? []).filter((node) =>
+      (catalogTypeFilter === "ALL" || node.entity_type === catalogTypeFilter)
+      && (catalogPlatformFilter === "ALL" || node.platform_urn === catalogPlatformFilter)
+      && (!term || `${node.label} ${node.urn} ${node.entity_type} ${node.platform_urn ?? ""}`.toLocaleLowerCase().includes(term))
+    );
+  }, [catalogGraph, catalogTypeFilter, catalogPlatformFilter, catalogSearchTerm]);
 
-  function resetAfterImpact() { setCritique(null); setJudging(null); setProposal(null); }
+  function resetAfterImpact() { setAnalysisRunId(null); setCritique(null); setJudging(null); setProposal(null); }
   function mergeCatalogGraph(next: CatalogGraph) {
     setCatalogGraph((current) => {
       if (!current) return next;
@@ -134,15 +157,16 @@ export default function App() {
   function applyCatalogCache(snapshot: CatalogCacheSnapshot) {
     setCatalogCache(snapshot.status);
     setCatalogGraph(snapshot.graph);
-    setCatalogHasMore(false);
+    setCatalogOffset(snapshot.graph.nodes.length);
+    setCatalogHasMore(snapshot.graph.truncated);
     setSelectedCatalogNode((current) => snapshot.graph.nodes.find((node) => node.urn === current?.urn) ?? snapshot.graph.nodes[0] ?? null);
   }
   async function refreshHistory() { try { setHistory(await request<RunSummary[]>("/api/v1/judges/history")); } catch { /* non-critical */ } }
   async function runImpact(event: FormEvent) {
     event.preventDefault(); setBusy("impact"); setError(null); setNotice(null);
     try {
-      const execution = await request<{ impact_report: ImpactReport; remediation_plan: RemediationPlan; graph: WorkflowGraph }>("/api/v1/workflows/analyze", payload);
-      resetAfterImpact(); setImpact(execution.impact_report); setPlan(execution.remediation_plan); setWorkflowGraph(execution.graph);
+      const execution = await request<{ analysis_run_id: string; impact_report: ImpactReport; remediation_plan: RemediationPlan; graph: WorkflowGraph }>("/api/v1/workflows/analyze", payload);
+      resetAfterImpact(); setAnalysisRunId(execution.analysis_run_id); setImpact(execution.impact_report); setPlan(execution.remediation_plan); setWorkflowGraph(execution.graph);
       setNotice("Impact et plan déterministe générés. Aucun LLM ni changement DataHub n’a été déclenché.");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Analyse impossible"); } finally { setBusy(null); }
   }
@@ -152,11 +176,19 @@ export default function App() {
     catch (caught) { setError(caught instanceof Error ? caught.message : "Critique NVIDIA impossible"); } finally { setBusy(null); }
   }
   async function runJudges() {
-    if (!impact || !plan) return; setBusy("judges"); setError(null);
-    try { const result = await request<{ judging: StoredJudging; graph: WorkflowGraph }>("/api/v1/workflows/judge", { impact_report: impact, remediation_plan: plan, repair_cycles: 0 }); setJudging(result.judging); setWorkflowGraph(result.graph); await refreshHistory(); setNotice("Les juges ont été exécutés indépendamment."); }
+    if (!analysisRunId) return; setBusy("judges"); setError(null);
+    try { const result = await request<{ judging: StoredJudging; graph: WorkflowGraph }>("/api/v1/workflows/judge", { analysis_run_id: analysisRunId, repair_cycles: 0 }); setJudging(result.judging); setWorkflowGraph(result.graph); await refreshHistory(); setNotice("Les juges ont été exécutés indépendamment sur le rapport conservé par le serveur."); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Revue des juges impossible"); } finally { setBusy(null); }
   }
   async function searchCatalog(event: FormEvent) {
+    event.preventDefault();
+    setCatalogSearchTerm(catalogQuery);
+    setSelectedCatalogNode((current) => current ?? visibleCatalogNodes[0] ?? null);
+    setNotice(catalogQuery.trim()
+      ? "Filtre appliquÃ© au catalogue dÃ©jÃ  chargÃ© par le serveur."
+      : "Filtre de recherche effacÃ© : le catalogue complet est affichÃ©.");
+  }
+  async function legacySearchCatalog(event: FormEvent) {
     event.preventDefault(); if (!catalogQuery.trim()) return; setCatalogBusy("catalog-search"); setError(null);
     try { const graph = await request<CatalogGraph>(`/api/v1/datahub/catalog/search?query=${encodeURIComponent(catalogQuery.trim())}`); setCatalogGraph(graph); setSelectedCatalogNode(graph.nodes[0] ?? null); setNotice(`${graph.nodes.length} actif(s) chargés depuis DataHub.`); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Recherche catalogue impossible"); } finally { setCatalogBusy(null); }
@@ -208,7 +240,7 @@ export default function App() {
   }
   async function askChat(event: FormEvent) {
     event.preventDefault(); if (!chatInput.trim()) return; setChatBusy("query"); setError(null);
-    try { const reply = await request<ChatReply>("/api/v1/chat/query", { message: chatInput.trim(), session_id: chatSessionId, memory_enabled: chatMemoryEnabled }); setChatReply(reply); setChatMemory(reply.memory ?? null); }
+    try { const reply = await request<ChatReply>("/api/v1/chat/query", { message: chatInput.trim(), session_id: chatSessionId, memory_enabled: chatMemoryEnabled }); setChatReply(reply); setChatMemory(reply.memory ?? null); if (reply.action_proposal.action === "ANALYZE_IMPACT" && reply.target_resolution?.targets.length === 1) setAssetUrn(reply.target_resolution.targets[0].urn); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Question impossible"); } finally { setChatBusy(null); }
   }
   async function clearChatMemory() {
@@ -220,8 +252,8 @@ export default function App() {
     if (!window.confirm("Lancer l’analyse d’impact en lecture seule avec les champs du formulaire ?")) return;
     setChatBusy("analysis"); setError(null);
     try {
-      const execution = await request<{ impact_report: ImpactReport; remediation_plan: RemediationPlan; graph: WorkflowGraph }>("/api/v1/chat/execute-analysis", { change_request: payload, confirmed: true });
-      resetAfterImpact(); setImpact(execution.impact_report); setPlan(execution.remediation_plan); setWorkflowGraph(execution.graph); setNotice("Analyse DataHub lancée depuis le chat : aucune écriture n’a été exécutée.");
+      const execution = await request<{ analysis_run_id: string; impact_report: ImpactReport; remediation_plan: RemediationPlan; graph: WorkflowGraph }>("/api/v1/chat/execute-analysis", { change_request: payload, confirmed: true });
+      resetAfterImpact(); setAnalysisRunId(execution.analysis_run_id); setImpact(execution.impact_report); setPlan(execution.remediation_plan); setWorkflowGraph(execution.graph); setNotice("Analyse DataHub lancée depuis le chat : aucune écriture n’a été exécutée.");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Analyse depuis le chat impossible"); } finally { setChatBusy(null); }
   }
   async function prepareWriteback() {
@@ -236,7 +268,16 @@ export default function App() {
     catch (caught) { setError(caught instanceof Error ? caught.message : "Décision impossible"); } finally { setBusy(null); }
   }
 
-  return <main className="shell">
+  return <main className={`shell page-${page}`}>
+    {isLoading && <div className="loading-screen" role="status" aria-live="polite"><div className="loading-mark">LG</div><div><b>LineageGuard</b><span>Préparation de votre espace sécurisé…</span></div><i /></div>}
+    <header className="site-header"><button className="brand" onClick={() => navigate("accueil")} aria-label="Aller à l'accueil"><span>LG</span><b>LineageGuard</b></button><nav aria-label="Navigation principale"><button className={page === "accueil" ? "active" : ""} onClick={() => navigate("accueil")}>Accueil</button><button className={page === "catalogue" ? "active" : ""} onClick={() => navigate("catalogue")}>Cartographie</button><button className={page === "assistant" ? "active" : ""} onClick={() => navigate("assistant")}>Assistant</button><button className={page === "analyse" ? "active" : ""} onClick={() => navigate("analyse")}>Nouvelle analyse</button><button className={page === "suivi" ? "active" : ""} onClick={() => navigate("suivi")}>Suivi</button></nav><div className={`api-state ${health ? "online" : "offline"}`}><i /> {health ? "Système disponible" : "Connexion en cours"}</div></header>
+    <section className="home-view">
+      <div className="hero-copy"><p className="eyebrow">Décidez avec confiance</p><h1>Chaque changement <em>mérite</em> d’être compris.</h1><p>LineageGuard vous montre clairement ce qui pourrait être touché avant toute modification de vos données.</p><div className="hero-actions"><button className="primary" onClick={() => navigate("analyse")}>Démarrer une analyse <span>→</span></button><button className="text-button" onClick={() => navigate("catalogue")}>Explorer mes données</button></div><div className="trust-row"><span>✓ Aucune modification sans validation</span><span>✓ Résultats expliqués simplement</span></div></div>
+      <div className="hero-orbit" aria-hidden="true"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="core">LG<span>protège</span></div><div className="signal signal-one">Commandes</div><div className="signal signal-two">Rapports</div><div className="signal signal-three">Tableaux de bord</div></div>
+      <div className="home-stats"><article><b>{catalogCache?.loaded_assets ?? "—"}</b><span>éléments suivis</span></article><article><b>{catalogCache?.loaded_edges ?? "—"}</b><span>liens analysés</span></article><article><b>{history.length}</b><span>analyses récentes</span></article></div>
+      <section className="home-section"><p className="eyebrow">Comment ça marche</p><h2>Un parcours clair, en trois étapes.</h2><div className="journey-cards"><article><span>01</span><h3>Décrivez votre changement</h3><p>Indiquez simplement ce que vous souhaitez modifier.</p></article><article><span>02</span><h3>Visualisez les conséquences</h3><p>Nous identifions les données, rapports et équipes concernés.</p></article><article><span>03</span><h3>Agissez sereinement</h3><p>Recevez un plan précis et gardez toujours le dernier mot.</p></article></div></section>
+      <section className="feature-banner"><div><p className="eyebrow">Pensé pour les équipes</p><h2>La sécurité sans complexité.</h2><p>Une plateforme unique pour comprendre vos données, prévenir les erreurs et collaborer avec confiance.</p></div><button className="secondary" onClick={() => navigate("assistant")}>Poser une question</button></section>
+    </section>
     <header className="topbar"><div><p className="eyebrow">Build with DataHub · Agents That Do Real Work</p><h1>LineageGuard <span>AI</span></h1></div><div className={`api-state ${health ? "online" : "offline"}`}><i /> API {health ? `${health.status} · ${health.environment}` : "indisponible"}</div></header>
     <section className="guardrail"><strong>Mode sûr</strong><span>DataHub reste en lecture seule ; les juges sont manuels et toute écriture exige le HITL.</span></section>
     {error && <div className="banner error">{error}</div>}{notice && <div className="banner notice">{notice}</div>}
@@ -247,7 +288,7 @@ export default function App() {
     {impact && <section className="panel report"><div className="panel-heading"><div><p className="kicker">Étapes 2–3</p><h2>Rapport d’impact et plan</h2></div><span className={`badge ${statusTone(impact.risk_assessment.level)}`}>{impact.risk_assessment.level} · {impact.risk_assessment.score}/100</span></div><div className="metrics"><div><b>{impact.blast_radius}</b><span>actifs impactés</span></div><div><b>{impact.evidence_bundle.items.length}</b><span>preuves DataHub</span></div><div><b>{Math.round(impact.confidence * 100)}%</b><span>confiance</span></div></div><LineageDiagram source={impact.request.asset_urn} impacts={impact.impacted_assets} /><div className="split"><div><h3>Actifs et lineage</h3><ul className="asset-list">{impact.impacted_assets.slice(0, 8).map((item: any) => <li key={item.asset_urn}><code>{item.asset_urn}</code><span>{item.impact_type} · {item.criticality}</span></li>)}</ul></div><div><h3>Plan de remédiation</h3><ol>{plan?.migration_steps.map((step: any) => <li key={step.order}><b>{step.action}</b><span>{step.rationale}</span></li>)}</ol></div></div><details className="audit-details"><summary>Justification auditable</summary><ul>{impact.risk_assessment.explanation.map((line: string) => <li key={line}>{line}</li>)}</ul></details></section>}
     {plan && <section className="panel action-panel"><div><p className="kicker">Étape 4</p><h2>Critique NVIDIA Build</h2><p>Consultative : aucun changement automatique du plan.</p></div><button className="secondary" onClick={runCritique} disabled={busy !== null}>{busy === "critique" ? "Critique en cours…" : "Lancer la critique NVIDIA"}</button></section>}
     {critique && <section className="panel critique"><div className="panel-heading"><div><p className="kicker">Avis consultatif · {critique.model}</p><h2>Résultat NVIDIA</h2></div><span className="badge neutral">confiance {Math.round(critique.confidence * 100)}%</span></div><p>{critique.summary}</p>{critique.issues.map((issue, index) => <article className="issue" key={`${issue.finding}-${index}`}><b>{issue.severity}</b><p>{issue.finding}</p></article>)}</section>}
-    {plan && <section className="panel action-panel"><div><p className="kicker">Étape 5 · action externe</p><h2>Revue finale indépendante</h2><p>OpenAI et Groq reçoivent le même dossier sans voir le verdict de l’autre.</p></div><button className="primary" onClick={runJudges} disabled={busy !== null}>{busy === "judges" ? "Juges en cours…" : "Lancer OpenAI + Groq"}</button></section>}
+    {plan && <section className="panel action-panel"><div><p className="kicker">Étape 5 · action externe</p><h2>Revue finale indépendante</h2><p>OpenAI et Groq reçoivent le dossier conservé par le serveur sans voir le verdict de l’autre.</p></div><button className="primary" onClick={runJudges} disabled={busy !== null || !analysisRunId}>{busy === "judges" ? "Juges en cours…" : "Lancer OpenAI + Groq"}</button></section>}
     {judging && <section className="panel judges"><div className="panel-heading"><div><p className="kicker">Run serveur · {judging.run_id}</p><h2>Double revue</h2></div><span className={`badge ${statusTone(judging.result.aggregate_decision?.decision)}`}>{judging.result.aggregate_decision?.decision ?? "GATE 0"}</span></div>{!judging.result.deterministic_validation.passed && <div className="banner error">Gate 0 bloqué : {judging.result.deterministic_validation.errors.join(" · ")}</div>}<div className="judge-grid">{[judging.result.openai_verdict, judging.result.groq_verdict].map((verdict) => verdict && <JudgeCard key={verdict.judge_provider} verdict={verdict} />)}</div><p className="small"><b>Décision :</b> {judging.result.aggregate_decision?.rationale}</p>{judging.result.aggregate_decision?.decision === "FINALIZE_READ_ONLY" && <button className="secondary" onClick={prepareWriteback} disabled={busy !== null}>Préparer la proposition HITL</button>}</section>}
     {proposal && <section className="panel approval"><div className="panel-heading"><div><p className="kicker">Étape 6 · HITL</p><h2>Proposition de write-back</h2></div><span className={`badge ${statusTone(proposal.status)}`}>{proposal.status}</span></div><p><b>Mutation autorisée :</b> {proposal.allowed_mutations.join(", ")}</p><details><summary>Document et snapshot</summary><pre>{proposal.document_content}</pre><pre>{JSON.stringify(proposal.snapshot, null, 2)}</pre></details><div className="approval-actions"><button className="primary" onClick={() => decide("APPROVE_REPORT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL"}>Approuver l’écriture</button><button className="secondary" onClick={() => decide("REQUEST_REVISION")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL"}>Demander une révision</button><button className="danger" onClick={() => decide("REJECT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL"}>Rejeter</button></div></section>}
     <section className="panel history"><p className="kicker">Historique</p><h2>Exécutions récentes</h2>{history.length ? <ul>{history.map((item) => <li key={item.run_id}><code>{item.run_id.slice(0, 8)}</code> · <b className={`badge ${statusTone(item.decision ?? undefined)}`}>{item.decision ?? "GATE 0"}</b> · OpenAI {item.openai_status ?? "—"} · Groq {item.groq_status ?? "—"}</li>)}</ul> : <p className="small">Aucune revue persistée.</p>}</section>
@@ -259,9 +300,39 @@ function CatalogExplorer({ query, onQuery, onSearch, onSnapshot, onLoadMore, has
   return <section className="panel catalog-panel"><div className="panel-heading"><div><p className="kicker">DataHub MCP · lecture seule</p><h2>Carte 3D du catalogue et du lineage</h2></div><button className="primary" onClick={onSnapshot} disabled={busy !== null}>{busy === "catalog-cache-refresh" ? "Actualisation…" : "Actualiser depuis DataHub"}</button></div><div className="catalog-cache-status"><span className={`badge ${cacheReady ? "good" : cache?.state === "FAILED" ? "bad" : "warn"}`}>{cache?.state ?? "CONNECTING"}</span><span>{cache?.message ?? "Le serveur prépare le cache de la carte 3D."}</span>{cache && <small>{cache.loaded_assets} actifs · {cache.loaded_edges} relations · {cache.last_updated_at ? `mis à jour ${new Date(cache.last_updated_at).toLocaleTimeString()}` : "pas encore prêt"}{cache.refresh_reason ? ` · ${cache.refresh_reason}` : ""}</small>}</div><p className="small">Le serveur commence ce chargement à son démarrage, une seule fois par instance. Le navigateur lit le cache, puis le synchronise toutes les 5 secondes. Les actions LineageGuard déclenchent une actualisation immédiate; les changements externes sont détectés par le polling serveur.</p><form className="catalog-controls" onSubmit={onSearch}><label>Rechercher un actif DataHub<input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="orders, dashboard, dbt…" /></label><button className="secondary" disabled={busy !== null}>{busy === "catalog-search" ? "Recherche…" : "Rechercher"}</button><label>Type<select value={typeFilter} onChange={(event) => onType(event.target.value)}><option value="ALL">Tous</option>{types.map((value) => <option key={value}>{value}</option>)}</select></label><label>Plateforme<select value={platformFilter} onChange={(event) => onPlatform(event.target.value)}><option value="ALL">Toutes</option>{platforms.map((value) => <option key={value}>{value}</option>)}</select></label></form>{graph ? <><CatalogThreeD nodes={nodes} edges={graph.edges} onSelect={onSelect} /><CatalogDiagram nodes={nodes} edges={graph.edges} selected={selected?.urn} onSelect={onSelect} />{hasMore && <div className="catalog-more"><p className="small">D’autres actifs existent dans DataHub. Ajoutez-les à la même carte 3D sans lancer de recherche.</p><button className="secondary" onClick={onLoadMore} disabled={busy !== null}>{busy === "catalog-more" ? "Ajout en cours…" : "Charger 50 actifs supplémentaires"}</button></div>}{selected && <div className="catalog-detail"><div><p className="kicker">Actif sélectionné</p><code>{selected.urn}</code><p className="small">{selected.entity_type} · {selected.platform_urn ?? "plateforme non renseignée"} · {selected.owner_urns.length} owner(s)</p>{selected.recent_actions.length > 0 && <details className="catalog-activity"><summary>Actions LineageGuard récentes ({selected.recent_actions.length})</summary><ul>{selected.recent_actions.map((item) => <li key={`${item.timestamp}-${item.action}`}><b>{item.action}</b><span>{item.detail}</span><small>{new Date(item.timestamp).toLocaleString()}</small></li>)}</ul></details>}</div><div className="catalog-actions"><button className="secondary" onClick={() => onExpand("UPSTREAM")} disabled={busy !== null}>Charger l’amont</button><button className="secondary" onClick={() => onExpand("DOWNSTREAM")} disabled={busy !== null}>Charger l’aval</button></div></div>}</> : <p className="small">Le cache serveur charge le catalogue. La carte apparaîtra automatiquement sans action du navigateur.</p>}</section>;
 }
 
+function chatOutcome(reply: ChatReply) {
+  if (reply.action_proposal.action !== "NONE") return "ACTION_REQUIRED";
+  return reply.verification?.passed ? "VERIFIED" : "LIMITED";
+}
+
+function LegacyChatPanel({ status, reply, input, onInput, onIndex, onAsk, onAnalyze, busy, memory, memoryEnabled, onMemoryEnabled, onClearMemory }: { status: RagStatus | null; reply: ChatReply | null; input: string; onInput: (value: string) => void; onIndex: () => void; onAsk: (event: FormEvent) => void; onAnalyze: () => void; busy: string | null; memory: ChatMemory | null; memoryEnabled: boolean; onMemoryEnabled: (enabled: boolean) => void; onClearMemory: () => void }) {
+  // A previous Qdrant collection remains queryable while a refresh runs.
+  const ready = status?.query_available === true || status?.state === "COMPLETED";
+  return <section className="panel chat-panel"><div className="panel-heading"><div><p className="kicker">Agentic RAG + MCP</p><h2>Assistant DataHub vérifié</h2></div><span className={`badge ${ready ? "good" : "neutral"}`}>{ready ? "INDEX READY" : status?.state ?? "INDISPONIBLE"}</span></div><p className="small">Planification → Qdrant → outils MCP → raisonnement → vérification. Le chat ne peut pas écrire dans DataHub.</p><div className="chat-index"><span>{status?.message ?? "Démarrez l’indexation contrôlée."}{status?.state === "RUNNING" ? ` ${status.indexed_assets} actifs indexés.` : ""}</span><button className="secondary" onClick={onIndex} disabled={busy !== null || status?.state === "RUNNING"}>{busy === "index" || status?.state === "RUNNING" ? "Indexation…" : "Indexer les métadonnées DataHub"}</button></div><div className="chat-memory"><label><input type="checkbox" checked={memoryEnabled} onChange={(event) => onMemoryEnabled(event.target.checked)} disabled={busy !== null} /> Mémoire de conversation</label><span>{memoryEnabled ? `${memory?.message_count ?? 0} tour(s) conservé(s) localement (max. ${memory?.max_turns ?? 0})` : "Désactivée pour la prochaine question"}</span><button className="secondary" onClick={onClearMemory} disabled={busy !== null || !memory?.message_count}>Effacer la mémoire</button></div><p className="small">La mémoire sert seulement à résoudre le contexte entre questions. Chaque affirmation DataHub reste revérifiée par MCP en direct.</p><form className="chat-form" onSubmit={onAsk}><textarea value={input} onChange={(event) => onInput(event.target.value)} placeholder="Ex. Quels dashboards dépendent de orders ?" disabled={!ready || busy !== null} /><button className="primary" disabled={!ready || busy !== null}>{busy === "query" ? "Vérification…" : "Poser la question"}</button></form>{reply && <div className="chat-answer"><div className="panel-heading"><b>Résultat de vérification</b><span className={`badge ${chatOutcome(reply) === "VERIFIED" ? "good" : chatOutcome(reply) === "LIMITED" ? "warn" : "neutral"}`}>{chatOutcome(reply)}</span></div><p>{reply.answer}</p><p className="small">{reply.verification_note}</p>{reply.target_resolution && <p className="small"><b>Cible DataHub :</b> {reply.target_resolution.detail}</p>}{reply.model_usage && <p className="small">Usage: {reply.model_usage.model ?? "local"} · {reply.model_usage.total_tokens} tokens · {reply.model_usage.estimated_cost_usd !== null && reply.model_usage.estimated_cost_usd !== undefined ? `$${reply.model_usage.estimated_cost_usd.toFixed(6)}` : "coût non estimé"}</p>}<div className="chat-trace">{reply.agent_trace.map((step, index) => <article key={`${step.id}-${index}`}><b>{step.label}</b><small>{step.status}</small><span>{step.detail}</span></article>)}</div><div className="chat-citations">{reply.citations.map((citation) => <code key={`${citation.source}-${citation.urn}`}>{citation.label} · {citation.entity_type} · {citation.source === "datahub_mcp_live" ? "MCP vérifié" : "RAG"}</code>)}</div>{reply.action_proposal.action !== "NONE" && <div className="chat-action"><b>Action proposée : {reply.action_proposal.action}</b><p>{reply.action_proposal.reason}</p>{reply.action_proposal.action === "ANALYZE_IMPACT" && <button className="secondary" onClick={onAnalyze} disabled={busy !== null || reply.target_resolution?.targets.length !== 1}>Confirmer l’analyse en lecture seule</button>}{reply.action_proposal.action === "HITL_WRITEBACK" && <p className="small">Le write-back reste disponible uniquement via la proposition HITL existante, après double PASS.</p>}</div>}</div>}</section>;
+}
+
 function ChatPanel({ status, reply, input, onInput, onIndex, onAsk, onAnalyze, busy, memory, memoryEnabled, onMemoryEnabled, onClearMemory }: { status: RagStatus | null; reply: ChatReply | null; input: string; onInput: (value: string) => void; onIndex: () => void; onAsk: (event: FormEvent) => void; onAnalyze: () => void; busy: string | null; memory: ChatMemory | null; memoryEnabled: boolean; onMemoryEnabled: (enabled: boolean) => void; onClearMemory: () => void }) {
-  const ready = status?.state === "COMPLETED";
-  return <section className="panel chat-panel"><div className="panel-heading"><div><p className="kicker">Agentic RAG + MCP</p><h2>Assistant DataHub vérifié</h2></div><span className={`badge ${ready ? "good" : "neutral"}`}>{status?.state ?? "INDISPONIBLE"}</span></div><p className="small">Planification → Qdrant → outils MCP → raisonnement → vérification. Le chat ne peut pas écrire dans DataHub.</p><div className="chat-index"><span>{status?.message ?? "Démarrez l’indexation contrôlée."}{status?.state === "RUNNING" ? ` ${status.indexed_assets} actifs indexés.` : ""}</span><button className="secondary" onClick={onIndex} disabled={busy !== null || status?.state === "RUNNING"}>{busy === "index" || status?.state === "RUNNING" ? "Indexation…" : "Indexer les métadonnées DataHub"}</button></div><div className="chat-memory"><label><input type="checkbox" checked={memoryEnabled} onChange={(event) => onMemoryEnabled(event.target.checked)} disabled={busy !== null} /> Mémoire de conversation</label><span>{memoryEnabled ? `${memory?.message_count ?? 0} tour(s) conservé(s) localement (max. ${memory?.max_turns ?? 0})` : "Désactivée pour la prochaine question"}</span><button className="secondary" onClick={onClearMemory} disabled={busy !== null || !memory?.message_count}>Effacer la mémoire</button></div><p className="small">La mémoire sert seulement à résoudre le contexte entre questions. Chaque affirmation DataHub reste revérifiée par MCP en direct.</p><form className="chat-form" onSubmit={onAsk}><textarea value={input} onChange={(event) => onInput(event.target.value)} placeholder="Ex. Quels dashboards dépendent de orders ?" disabled={!ready || busy !== null} /><button className="primary" disabled={!ready || busy !== null}>{busy === "query" ? "Vérification…" : "Poser la question"}</button></form>{reply && <div className="chat-answer"><p>{reply.answer}</p><p className="small">{reply.verification_note}</p>{reply.model_usage && <p className="small">Usage: {reply.model_usage.model ?? "local"} · {reply.model_usage.total_tokens} tokens · {reply.model_usage.estimated_cost_usd !== null && reply.model_usage.estimated_cost_usd !== undefined ? `$${reply.model_usage.estimated_cost_usd.toFixed(6)}` : "coût non estimé"}</p>}<div className="chat-trace">{reply.agent_trace.map((step) => <article key={step.id}><b>{step.label}</b><small>{step.status}</small><span>{step.detail}</span></article>)}</div><div className="chat-citations">{reply.citations.map((citation) => <code key={`${citation.source}-${citation.urn}`}>{citation.label} · {citation.entity_type} · {citation.source === "datahub_mcp_live" ? "MCP vérifié" : "RAG"}</code>)}</div>{reply.action_proposal.action !== "NONE" && <div className="chat-action"><b>Action proposée : {reply.action_proposal.action}</b><p>{reply.action_proposal.reason}</p>{reply.action_proposal.action === "ANALYZE_IMPACT" && <button className="secondary" onClick={onAnalyze} disabled={busy !== null}>Confirmer l’analyse en lecture seule</button>}{reply.action_proposal.action === "HITL_WRITEBACK" && <p className="small">Le write-back reste disponible uniquement via la proposition HITL existante, après double PASS.</p>}</div>}</div>}</section>;
+  const ready = status?.query_available === true || status?.state === "COMPLETED";
+  const outcome = reply ? chatOutcome(reply) : null;
+  const outcomeText = outcome === "VERIFIED" ? "Réponse vérifiée avec des preuves DataHub en direct."
+    : outcome === "ACTION_REQUIRED" ? "Une action est proposée : votre confirmation est requise."
+    : "Réponse limitée : aucune conclusion n’est donnée sans preuve DataHub suffisante.";
+  return <section className="panel chat-panel">
+    <div className="panel-heading"><div><p className="kicker">Agentic RAG + MCP</p><h2>Assistant DataHub vérifié</h2></div><span className={`badge ${ready ? "good" : "neutral"}`}>{ready ? (status?.state === "RUNNING" ? "CHAT READY · INDEXING" : "INDEX READY") : status?.state ?? "INDISPONIBLE"}</span></div>
+    <p className="small">Planification → Qdrant → outils MCP → raisonnement → vérification. Le chat ne peut pas écrire dans DataHub.</p>
+    <div className="chat-index"><span>{status?.message ?? "Démarrez l’indexation contrôlée."}{status?.state === "RUNNING" ? ` ${status.indexed_assets} actifs indexés.` : ""}</span><button className="secondary" onClick={onIndex} disabled={busy !== null || status?.state === "RUNNING"}>{status?.state === "RUNNING" ? "Indexation en cours…" : "Indexer les métadonnées DataHub"}</button></div>
+    <div className="chat-memory"><label><input type="checkbox" checked={memoryEnabled} onChange={(event) => onMemoryEnabled(event.target.checked)} disabled={busy !== null} /> Mémoire de conversation</label><span>{memoryEnabled ? `${memory?.message_count ?? 0} tour(s) conservé(s) localement (max. ${memory?.max_turns ?? 0})` : "Désactivée pour la prochaine question"}</span><button className="secondary" onClick={onClearMemory} disabled={busy !== null || !memory?.message_count}>Effacer la mémoire</button></div>
+    <form className="chat-form" onSubmit={onAsk}><textarea value={input} onChange={(event) => onInput(event.target.value)} placeholder="Ex. Quels dashboards dépendent de orders ?" disabled={!ready || busy !== null} /><button className="primary" disabled={!ready || busy !== null}>{busy === "query" ? "Vérification…" : "Poser la question"}</button></form>
+    {reply && <div className="chat-answer">
+      <div className="panel-heading"><div><b>Réponse</b><p className="small">{outcomeText}</p></div><span className={`badge ${outcome === "VERIFIED" ? "good" : outcome === "LIMITED" ? "warn" : "neutral"}`}>{outcome}</span></div>
+      {reply.target_resolution && <div className="chat-target"><b>Cible DataHub</b><span>{reply.target_resolution.detail}</span>{reply.target_resolution.targets.map((target) => <code key={target.urn}>{target.label} · {target.platform_urn?.replace("urn:li:dataPlatform:", "") ?? target.entity_type}<small>{target.urn}</small></code>)}</div>}
+      <p className="chat-answer-text">{reply.answer}</p>
+      <p className="small">{reply.verification_note}</p>
+      <div className="chat-citations">{reply.citations.map((citation) => <code key={`${citation.source}-${citation.urn}`}>{citation.label} · {citation.entity_type} · {citation.source === "datahub_mcp_live" ? "preuve MCP vérifiée" : "contexte RAG"}</code>)}</div>
+      {reply.action_proposal.action !== "NONE" && <div className="chat-action"><b>Action proposée : {reply.action_proposal.action}</b><p>{reply.action_proposal.reason}</p>{reply.action_proposal.action === "ANALYZE_IMPACT" && <button className="secondary" onClick={onAnalyze} disabled={busy !== null || reply.target_resolution?.targets.length !== 1}>Confirmer l’analyse en lecture seule</button>}{reply.action_proposal.action === "HITL_WRITEBACK" && <p className="small">Aucune écriture n’est exécutée. Une proposition HITL reste obligatoire après double PASS.</p>}</div>}
+      <details className="chat-technical"><summary>Détails techniques et traçabilité</summary><p className="small">{reply.model_usage ? `${reply.model_usage.model ?? "local"} · ${reply.model_usage.total_tokens} tokens · ${reply.model_usage.estimated_cost_usd == null ? "coût non estimé" : `$${reply.model_usage.estimated_cost_usd.toFixed(6)}`}` : "Aucune consommation de modèle signalée."}</p><div className="chat-trace">{reply.agent_trace.map((step, index) => <article key={`${step.id}-${index}`}><b>{step.label}</b><small>{step.status}</small><span>{step.detail}</span></article>)}</div></details>
+    </div>}
+  </section>;
 }
 
 function WorkflowDiagram({ graph }: { graph: WorkflowGraph }) {

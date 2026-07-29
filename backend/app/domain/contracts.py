@@ -61,8 +61,8 @@ class ChangeRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_change_details(self) -> "ChangeRequest":
-        if self.change_type is not ChangeType.ADD_COLUMN and not self.column_name:
-            raise ValueError("column_name is required for this change type")
+        if not self.column_name:
+            raise ValueError("column_name is required for every schema change")
         if self.change_type in {
             ChangeType.RENAME_COLUMN,
             ChangeType.CHANGE_COLUMN_TYPE,
@@ -235,6 +235,13 @@ class JudgingRequest(BaseModel):
     repair_cycles: int = Field(default=0, ge=0, le=2)
 
 
+class StoredAnalysisJudgingRequest(BaseModel):
+    """Reference a server-owned analysis instead of accepting a browser copy."""
+
+    analysis_run_id: str = Field(min_length=8, max_length=100)
+    repair_cycles: int = Field(default=0, ge=0, le=2)
+
+
 class CritiqueSeverity(StrEnum):
     CRITICAL = "CRITICAL"
     MAJOR = "MAJOR"
@@ -368,6 +375,7 @@ class WorkflowVisualization(BaseModel):
 
 
 class WorkflowAnalysisExecution(BaseModel):
+    analysis_run_id: str
     impact_report: ImpactReport
     remediation_plan: RemediationPlan
     graph: WorkflowVisualization
@@ -459,6 +467,8 @@ class RagIndexStatus(BaseModel):
     total_assets: int = Field(default=0, ge=0)
     message: str = "Index not started."
     updated_at: datetime | None = None
+    # Re-indexing is non-blocking when a prior Qdrant collection is usable.
+    query_available: bool = False
 
 
 class RagCitation(BaseModel):
@@ -527,6 +537,14 @@ class ChatMemoryStatus(BaseModel):
     last_updated_at: datetime | None = None
 
 
+class ChatTargetResolution(BaseModel):
+    """Public outcome of resolving an asset before sensitive metadata reads."""
+
+    status: Literal["NOT_REQUIRED", "RESOLVED", "AMBIGUOUS", "NOT_FOUND"]
+    detail: str
+    targets: list[RagCitation] = Field(default_factory=list)
+
+
 class ModelUsage(BaseModel):
     """Safe provider metering for a single agentic chat run."""
 
@@ -546,6 +564,8 @@ class ChatResponse(BaseModel):
     evidence: list[AgentEvidence] = Field(default_factory=list)
     verification: VerificationResult | None = None
     memory: ChatMemoryStatus | None = None
+    target_resolution: ChatTargetResolution | None = None
+    active_verified_asset: RagCitation | None = None
     model_usage: ModelUsage | None = None
 
 
