@@ -30,6 +30,7 @@ class Settings:
     nvidia_critic_model: str | None = None
     nvidia_timeout_seconds: int = 90
     datahub_writeback_enabled: bool = False
+    writeback_stale_seconds: int = 300
     langsmith_tracing_enabled: bool = False
     langsmith_project: str | None = None
     qdrant_url: str = "http://qdrant:6333"
@@ -72,6 +73,9 @@ def get_settings() -> Settings:
         nvidia_critic_model=os.getenv("NVIDIA_CRITIC_MODEL") or None,
         nvidia_timeout_seconds=int(os.getenv("NVIDIA_TIMEOUT_SECONDS", "90")),
         datahub_writeback_enabled=os.getenv("DATAHUB_WRITEBACK_ENABLED", "false").lower() == "true",
+        writeback_stale_seconds=max(
+            30, int(os.getenv("WRITEBACK_STALE_SECONDS", "300"))
+        ),
         langsmith_tracing_enabled=(
             _enabled(os.getenv("LANGSMITH_TRACING") or os.getenv("LANGCHAIN_TRACING_V2", "false"))
             and bool(os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY"))

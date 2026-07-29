@@ -101,12 +101,27 @@ An index can be `RUNNING` while `query_available=true`: a prior Qdrant collectio
 | `GET` | `/api/v1/writebacks/{run_id}/audit` | Read ordered audit events |
 | `POST` | `/api/v1/writebacks/{run_id}/approve` | Human approval, revision, or rejection |
 | `POST` | `/api/v1/writebacks/{run_id}/rollback` | Separate approval to supersede a completed document |
+| `POST` | `/api/v1/writebacks/{run_id}/reconcile` | Resolve an uncertain create after live DataHub verification |
 
-The sole write action is `save_document` for an Analysis document. An approval fails safely when `DATAHUB_WRITEBACK_ENABLED=false`; it does not silently change DataHub.
+The sole write action is `save_document` for an Analysis document. An approval
+fails safely when `DATAHUB_WRITEBACK_ENABLED=false`; it does not silently
+change DataHub. Proposal responses deliberately omit the idempotency key. The
+client that prepared the proposal must retain that key for subsequent human
+decisions.
+
+Concurrent approval requests are serialized with a durable compare-and-swap;
+only one caller may invoke DataHub. An ambiguous remote result returns
+`WRITEBACK_UNCERTAIN` and blocks automatic retries. Reconciliation either
+adopts a document whose title and related asset are reverified through MCP, or
+records an explicit human confirmation that no document exists. Compensation
+operates only on the persisted document URN. See
+[Secure HITL write-back](hitl-writeback.md).
 
 ## HTTP behaviour
 
 - `200` / `202`: normal read or accepted background operation.
+- `409`: concurrent operation, immutable idempotency conflict, or uncertain
+  external outcome that requires reconciliation.
 - `422`: validation failed or explicit confirmation is missing.
 - `503`: DataHub, Qdrant, or optional provider configuration is unavailable.
 - `500`: unexpected server condition; inspect backend logs without copying secrets.

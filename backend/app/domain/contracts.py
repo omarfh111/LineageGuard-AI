@@ -288,9 +288,12 @@ class WritebackStatus(StrEnum):
     PENDING_APPROVAL = "PENDING_APPROVAL"
     APPROVED = "APPROVED"
     WRITEBACK_PENDING = "WRITEBACK_PENDING"
+    WRITEBACK_UNCERTAIN = "WRITEBACK_UNCERTAIN"
     COMPLETED = "COMPLETED"
+    REVISION_REQUESTED = "REVISION_REQUESTED"
     REJECTED = "REJECTED"
     ROLLBACK_PENDING = "ROLLBACK_PENDING"
+    ROLLBACK_UNCERTAIN = "ROLLBACK_UNCERTAIN"
     ROLLED_BACK = "ROLLED_BACK"
     FAILED = "FAILED"
 
@@ -307,10 +310,41 @@ class WritebackProposal(BaseModel):
     status: WritebackStatus = WritebackStatus.PENDING_APPROVAL
 
 
+class WritebackProposalView(BaseModel):
+    """Public proposal projection that never exposes the approval key."""
+
+    run_id: str
+    report_hash: str
+    target_asset_urn: str
+    document_title: str
+    document_content: str
+    allowed_mutations: list[str]
+    snapshot: dict[str, Any]
+    status: WritebackStatus
+
+    @classmethod
+    def from_proposal(cls, proposal: WritebackProposal) -> "WritebackProposalView":
+        return cls.model_validate(
+            proposal.model_dump(exclude={"idempotency_key"})
+        )
+
+
 class ApprovalRequest(BaseModel):
     decision: HumanDecision
     comment: str = Field(min_length=1, max_length=1000)
     idempotency_key: str = Field(min_length=8, max_length=200)
+
+
+class WritebackReconciliationAction(StrEnum):
+    ADOPT_COMPLETED_DOCUMENT = "ADOPT_COMPLETED_DOCUMENT"
+    CONFIRM_NO_DOCUMENT_CREATED = "CONFIRM_NO_DOCUMENT_CREATED"
+
+
+class WritebackReconciliationRequest(BaseModel):
+    action: WritebackReconciliationAction
+    comment: str = Field(min_length=1, max_length=1000)
+    idempotency_key: str = Field(min_length=8, max_length=200)
+    document_urn: str | None = None
 
 
 class AuditEvent(BaseModel):

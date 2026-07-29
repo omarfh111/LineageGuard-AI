@@ -15,7 +15,10 @@ The application never changes a warehouse schema, dbt model, lineage edge, dashb
 - Shows the full bounded DataHub catalog as an interactive 3D graph, including platform colors, lineage edges, hover metadata, and in-session LineageGuard activity.
 - Uses optional NVIDIA advisory critique and independent OpenAI/Groq judges. No judge can call DataHub or write data.
 - Routes write requests only to the existing human-in-the-loop (HITL) approval path.
-- Persists audit events, proposals, and idempotency keys in local SQLite; Qdrant persists a safe metadata-only retrieval index.
+- Serializes concurrent approvals with durable compare-and-swap, blocks retries
+  after ambiguous remote outcomes, and requires MCP-verified reconciliation.
+- Persists audit events, proposals, operation ownership, and idempotency bindings
+  in local SQLite; Qdrant persists a safe metadata-only retrieval index.
 - Persists each deterministic analysis as a server-owned snapshot; final judges
   receive an `analysis_run_id`, never a browser-submitted replacement report.
 
@@ -78,15 +81,26 @@ The public trace explains actions, tool choices, target resolution, and verifica
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING_APPROVAL
-    PENDING_APPROVAL --> REJECTED: human rejects or requests revision
-    PENDING_APPROVAL --> WRITEBACK_PENDING: APPROVE_REPORT and feature enabled
+    PENDING_APPROVAL --> REJECTED: human rejects
+    PENDING_APPROVAL --> REVISION_REQUESTED: human requests revision
+    PENDING_APPROVAL --> WRITEBACK_PENDING: APPROVE_REPORT + atomic claim
     WRITEBACK_PENDING --> COMPLETED: DataHub document URN returned
-    WRITEBACK_PENDING --> FAILED: DataHub write fails
+    WRITEBACK_PENDING --> WRITEBACK_UNCERTAIN: timeout, crash, or ambiguous result
+    WRITEBACK_UNCERTAIN --> COMPLETED: MCP-verified adoption
+    WRITEBACK_UNCERTAIN --> PENDING_APPROVAL: human confirms no document
     COMPLETED --> ROLLBACK_PENDING: separate human approval
     ROLLBACK_PENDING --> ROLLED_BACK: document superseded
+    ROLLBACK_PENDING --> ROLLBACK_UNCERTAIN: ambiguous compensation
+    ROLLBACK_UNCERTAIN --> ROLLBACK_PENDING: explicit retry on same URN
 ```
 
 `FINALIZE_READ_ONLY` means both judges passed their thresholds. It is **not** permission to write. The separate human decision and `DATAHUB_WRITEBACK_ENABLED=true` remain mandatory.
+
+The local protocol guarantees one automatic writer claimant, not distributed
+exactly-once delivery. If DataHub may have accepted a request but its response
+is lost, LineageGuard enters an uncertain state and refuses to retry until a
+human reconciles the exact document through live MCP evidence. Details and
+failure procedures are in [Secure HITL write-back](docs/hitl-writeback.md).
 
 ## Quick start
 

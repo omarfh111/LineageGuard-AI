@@ -15,10 +15,20 @@ sequenceDiagram
   participant M as DataHub MCP
   participant D as DataHub
   H->>L: Explicit environment confirmation
-  L->>M: save_document (Analysis only)
+  par Approval A
+    L->>L: Atomic compare-and-swap
+  and Approval B
+    L->>L: Atomic compare-and-swap
+  end
+  L->>M: exactly one save_document call (Analysis only)
   M->>D: Create Analysis document
   D-->>L: document URN
-  L->>M: save_document (same URN, superseded content)
+  par Rollback A
+    L->>L: Atomic compare-and-swap
+  and Rollback B
+    L->>L: Atomic compare-and-swap
+  end
+  L->>M: exactly one save_document call (same URN)
   M->>D: Supersede proof document
   L-->>H: Audit events and final ROLLED_BACK status
 ```
@@ -42,8 +52,10 @@ $env:DATAHUB_GMS_URL = "http://localhost:8080"
 python -m pytest tests/integration/test_live_writeback_proof.py -q -p no:cacheprovider
 ```
 
-The command deliberately creates and then supersedes one document. Capture the
-terminal output plus the document URN/audit trail for the submission evidence.
+The command deliberately creates and then supersedes one document. It submits
+two concurrent approvals and two concurrent compensations, asserting one writer
+call in each case. Capture the terminal output plus the document URN/audit trail
+for the submission evidence.
 After the proof, unset `DATAHUB_WRITEBACK_ENABLED` or restore it to `false`.
 
 The proof uses a synthetic deterministic PASS packet so it measures the live

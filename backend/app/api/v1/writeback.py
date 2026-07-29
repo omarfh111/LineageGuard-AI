@@ -9,11 +9,19 @@ from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
 from app.datahub.mcp_client import DataHubMcpClient, get_datahub_client
-from app.domain.contracts import ApprovalRequest, AuditEvent, WritebackPreparationRequest, WritebackProposal
+from app.domain.contracts import (
+    ApprovalRequest,
+    AuditEvent,
+    WritebackPreparationRequest,
+    WritebackProposalView,
+    WritebackReconciliationRequest,
+)
 from app.services.run_store import run_store
 from app.services.writeback import (
     McpDocumentWriter,
+    WritebackConflict,
     WritebackError,
+    WritebackOutcomeUnknown,
     WritebackRepository,
     WritebackService,
 )
@@ -36,39 +44,43 @@ def get_writeback_service(
         _service = WritebackService(
             McpDocumentWriter(client),
             WritebackRepository(get_settings().database_url),
+            stale_after_seconds=get_settings().writeback_stale_seconds,
         )
     return _service
 
 
-@router.post("/prepare", response_model=WritebackProposal)
+@router.post("/prepare", response_model=WritebackProposalView)
 def prepare(
     request: PrepareRequest,
     service: Annotated[WritebackService, Depends(get_writeback_service)],
-) -> WritebackProposal:
+) -> WritebackProposalView:
     stored = run_store.get(request.run_id)
     if not stored:
         raise HTTPException(404, "Unknown server-owned judging run")
     try:
-        return service.prepare(
+        proposal = service.prepare(
             WritebackPreparationRequest(
                 judging_request=stored[0],
                 judging_result=stored[1],
                 idempotency_key=request.idempotency_key,
             )
         )
+        return WritebackProposalView.from_proposal(proposal)
+    except WritebackConflict as error:
+        raise HTTPException(409, str(error)) from error
     except WritebackError as error:
         raise HTTPException(422, str(error)) from error
 
 
-@router.get("/{run_id}", response_model=WritebackProposal)
+@router.get("/{run_id}", response_model=WritebackProposalView)
 def get_proposal(
     run_id: str,
     service: Annotated[WritebackService, Depends(get_writeback_service)],
-) -> WritebackProposal:
+) -> WritebackProposalView:
     proposal = service.get(run_id)
     if not proposal:
         raise HTTPException(404, "Unknown write-back proposal")
-    return proposal
+    return WritebackProposalView.from_proposal(proposal)
 
 
 @router.get("/{run_id}/audit", response_model=list[AuditEvent])
@@ -81,41 +93,65 @@ def get_audit(
     return service.audit_events(run_id)
 
 
-@router.post("/{run_id}/approve", response_model=WritebackProposal)
+@router.post("/{run_id}/approve", response_model=WritebackProposalView)
 async def approve(
     run_id: str,
     request: ApprovalRequest,
     service: Annotated[WritebackService, Depends(get_writeback_service)],
-) -> WritebackProposal:
+) -> WritebackProposalView:
     try:
-        proposal = await service.decide(run_id, request)
-        if proposal.status == "COMPLETED":
+        outcome = await service.decide_with_outcome(run_id, request)
+        proposal = outcome.proposal
+        if outcome.performed and proposal.status == "COMPLETED":
             await catalog_cache.record_action(
                 proposal.target_asset_urn,
                 "ANALYSIS_DOCUMENT_WRITTEN",
                 f"Human-approved DataHub Analysis document created: {proposal.snapshot.get('document_urn', 'unknown URN')}.",
             )
             await catalog_cache.request_refresh("approved_analysis_document_writeback")
-        return proposal
+        return WritebackProposalView.from_proposal(proposal)
+    except (WritebackConflict, WritebackOutcomeUnknown) as error:
+        raise HTTPException(409, str(error)) from error
     except WritebackError as error:
         raise HTTPException(422, str(error)) from error
 
 
-@router.post("/{run_id}/rollback", response_model=WritebackProposal)
+@router.post("/{run_id}/rollback", response_model=WritebackProposalView)
 async def rollback(
     run_id: str,
     request: ApprovalRequest,
     service: Annotated[WritebackService, Depends(get_writeback_service)],
-) -> WritebackProposal:
+) -> WritebackProposalView:
     try:
-        proposal = await service.rollback(run_id, request)
-        if proposal.status == "ROLLED_BACK":
+        outcome = await service.rollback_with_outcome(run_id, request)
+        proposal = outcome.proposal
+        if outcome.performed and proposal.status == "ROLLED_BACK":
             await catalog_cache.record_action(
                 proposal.target_asset_urn,
                 "ANALYSIS_DOCUMENT_SUPERSEDED",
                 f"Human-approved compensation completed for {proposal.snapshot.get('document_urn', 'unknown URN')}.",
             )
             await catalog_cache.request_refresh("analysis_document_compensation")
-        return proposal
+        return WritebackProposalView.from_proposal(proposal)
+    except (WritebackConflict, WritebackOutcomeUnknown) as error:
+        raise HTTPException(409, str(error)) from error
+    except WritebackError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@router.post("/{run_id}/reconcile", response_model=WritebackProposalView)
+async def reconcile(
+    run_id: str,
+    request: WritebackReconciliationRequest,
+    service: Annotated[WritebackService, Depends(get_writeback_service)],
+) -> WritebackProposalView:
+    """Resolve an uncertain create only after explicit human verification."""
+
+    try:
+        return WritebackProposalView.from_proposal(
+            await service.reconcile(run_id, request)
+        )
+    except (WritebackConflict, WritebackOutcomeUnknown) as error:
+        raise HTTPException(409, str(error)) from error
     except WritebackError as error:
         raise HTTPException(422, str(error)) from error

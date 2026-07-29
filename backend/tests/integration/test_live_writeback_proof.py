@@ -7,6 +7,7 @@ modifies a dataset, schema, lineage relationship, dbt job or warehouse.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import replace
 
@@ -26,11 +27,43 @@ from app.domain.contracts import (
 from app.services.catalog_graph import catalog_from_search
 from app.services.judging import validate_gate_zero
 from app.services.remediation_planner import DeterministicRemediationPlanner
-from app.services.writeback import McpDocumentWriter, WritebackRepository, WritebackService
+from app.services.writeback import (
+    McpDocumentWriter,
+    WritebackConflict,
+    WritebackRepository,
+    WritebackService,
+)
 
 
 pytestmark = pytest.mark.integration
 _CONFIRMATION = "I_APPROVE_DEMO_DOCUMENT"
+
+
+class CountingWriter:
+    def __init__(self, delegate: McpDocumentWriter) -> None:
+        self.delegate = delegate
+        self.save_calls = 0
+        self.supersede_calls = 0
+
+    async def save(self, title: str, content: str, related_asset: str) -> str:
+        self.save_calls += 1
+        return await self.delegate.save(title, content, related_asset)
+
+    async def supersede(
+        self, document_urn: str, content: str, related_asset: str
+    ) -> None:
+        self.supersede_calls += 1
+        await self.delegate.supersede(document_urn, content, related_asset)
+
+    async def verify(
+        self,
+        document_urn: str,
+        expected_title: str,
+        expected_related_asset: str,
+    ) -> bool:
+        return await self.delegate.verify(
+            document_urn, expected_title, expected_related_asset
+        )
 
 
 @pytest.mark.asyncio
@@ -80,8 +113,9 @@ async def test_live_document_writeback_with_explicit_human_approval(tmp_path) ->
             rationale="Synthetic double-PASS fixture for an explicitly approved live MCP proof.",
         ),
     )
+    writer = CountingWriter(McpDocumentWriter(client))
     service = WritebackService(
-        McpDocumentWriter(client),
+        writer,
         WritebackRepository(f"sqlite:///{tmp_path / 'writeback-proof.db'}"),
     )
     preparation = WritebackPreparationRequest(
@@ -90,26 +124,39 @@ async def test_live_document_writeback_with_explicit_human_approval(tmp_path) ->
         idempotency_key="live-writeback-proof-v1",
     )
     proposal = service.prepare(preparation)
-    completed = await service.decide(
-        proposal.run_id,
-        ApprovalRequest(
-            decision=HumanDecision.APPROVE_REPORT,
-            comment="Explicit local demo approval for the proof document.",
-            idempotency_key=preparation.idempotency_key,
-        ),
+    approve = ApprovalRequest(
+        decision=HumanDecision.APPROVE_REPORT,
+        comment="Explicit local demo approval for the proof document.",
+        idempotency_key=preparation.idempotency_key,
+    )
+    approval_results = await asyncio.gather(
+        service.decide(proposal.run_id, approve),
+        service.decide(proposal.run_id, approve),
+        return_exceptions=True,
+    )
+    completed = next(
+        result for result in approval_results if not isinstance(result, Exception)
     )
     assert completed.status == "COMPLETED"
     assert str(completed.snapshot["document_urn"]).startswith("urn:li:document:")
+    assert writer.save_calls == 1
+    assert sum(isinstance(result, WritebackConflict) for result in approval_results) <= 1
 
-    rolled_back = await service.rollback(
-        proposal.run_id,
-        ApprovalRequest(
-            decision=HumanDecision.APPROVE_ROLLBACK,
-            comment="Clean up the proof document by superseding it.",
-            idempotency_key=preparation.idempotency_key,
-        ),
+    approve_rollback = ApprovalRequest(
+        decision=HumanDecision.APPROVE_ROLLBACK,
+        comment="Clean up the proof document by superseding it.",
+        idempotency_key=preparation.idempotency_key,
+    )
+    rollback_results = await asyncio.gather(
+        service.rollback(proposal.run_id, approve_rollback),
+        service.rollback(proposal.run_id, approve_rollback),
+        return_exceptions=True,
+    )
+    rolled_back = next(
+        result for result in rollback_results if not isinstance(result, Exception)
     )
     assert rolled_back.status == "ROLLED_BACK"
+    assert writer.supersede_calls == 1
     assert [event.event_type for event in service.audit_events(proposal.run_id)] == [
         "WRITEBACK_PREPARED",
         "APPROVED",

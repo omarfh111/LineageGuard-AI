@@ -14,7 +14,7 @@ type RemediationPlan = Record<string, any>;
 type Critique = { model: string; summary: string; confidence: number; issues: Array<{ severity: string; finding: string; evidence_ids: string[] }>; recommended_revisions: string[] };
 type Verdict = { judge_provider: string; judge_model: string; verdict: string; confidence: number; scores: Record<string, number>; critical_errors: string[]; repair_instructions: string[]; audit_rationale: string[] };
 type StoredJudging = { run_id: string; result: { deterministic_validation: { passed: boolean; errors: string[] }; openai_verdict: Verdict | null; groq_verdict: Verdict | null; aggregate_decision: { decision: string; human_review_required: boolean; rationale: string } | null } };
-type Proposal = { run_id: string; status: string; target_asset_urn: string; document_content: string; allowed_mutations: string[]; snapshot: Record<string, unknown>; idempotency_key: string };
+type Proposal = { run_id: string; status: string; target_asset_urn: string; document_content: string; allowed_mutations: string[]; snapshot: Record<string, unknown> };
 type RunSummary = { run_id: string; decision: string | null; openai_status: string | null; groq_status: string | null };
 type WorkflowGraph = { nodes: Array<{ id: string; label: string; kind: string; status: string; description: string }>; edges: Array<{ source: string; target: string; label?: string | null }>; tracing_enabled: boolean; tracing_project?: string | null };
 type CatalogAction = { timestamp: string; action: string; detail: string };
@@ -76,6 +76,7 @@ export default function App() {
   const [critique, setCritique] = useState<Critique | null>(null);
   const [judging, setJudging] = useState<StoredJudging | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [writebackKey, setWritebackKey] = useState<string | null>(null);
   const [history, setHistory] = useState<RunSummary[]>([]);
   const [workflowGraph, setWorkflowGraph] = useState<WorkflowGraph | null>(null);
   const [catalogQuery, setCatalogQuery] = useState("");
@@ -143,7 +144,7 @@ export default function App() {
     );
   }, [catalogGraph, catalogTypeFilter, catalogPlatformFilter, catalogSearchTerm]);
 
-  function resetAfterImpact() { setAnalysisRunId(null); setCritique(null); setJudging(null); setProposal(null); }
+  function resetAfterImpact() { setAnalysisRunId(null); setCritique(null); setJudging(null); setProposal(null); setWritebackKey(null); }
   function mergeCatalogGraph(next: CatalogGraph) {
     setCatalogGraph((current) => {
       if (!current) return next;
@@ -258,14 +259,29 @@ export default function App() {
   }
   async function prepareWriteback() {
     if (!judging) return; setBusy("prepare"); setError(null);
-    try { const result = await request<Proposal>("/api/v1/writebacks/prepare", { run_id: judging.run_id, idempotency_key: crypto.randomUUID() }); setProposal(result); setNotice("Proposition HITL enregistrée, sans écriture DataHub."); }
+    try { const key = crypto.randomUUID(); const result = await request<Proposal>("/api/v1/writebacks/prepare", { run_id: judging.run_id, idempotency_key: key }); setWritebackKey(key); setProposal(result); setNotice("Proposition HITL enregistrée, sans écriture DataHub."); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Préparation impossible"); } finally { setBusy(null); }
   }
   async function decide(decision: "APPROVE_REPORT" | "REQUEST_REVISION" | "REJECT") {
-    if (!proposal || (decision === "APPROVE_REPORT" && !window.confirm("Confirmer la demande d’écriture contrôlée dans DataHub ?"))) return;
+    if (!proposal || !writebackKey || (decision === "APPROVE_REPORT" && !window.confirm("Confirmer la demande d’écriture contrôlée dans DataHub ?"))) return;
     setBusy("approval"); setError(null);
-    try { const result = await request<Proposal>(`/api/v1/writebacks/${proposal.run_id}/approve`, { decision, comment: "Décision prise depuis l’interface.", idempotency_key: proposal.idempotency_key }); setProposal(result); setNotice(`Décision enregistrée : ${result.status}.`); }
+    try { const result = await request<Proposal>(`/api/v1/writebacks/${proposal.run_id}/approve`, { decision, comment: "Décision prise depuis l’interface.", idempotency_key: writebackKey }); setProposal(result); setNotice(`Décision enregistrée : ${result.status}.`); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Décision impossible"); } finally { setBusy(null); }
+  }
+  async function rollbackWriteback() {
+    if (!proposal || !writebackKey || !window.confirm("Confirmer la compensation du document DataHub créé par ce run ?")) return;
+    setBusy("rollback"); setError(null);
+    try { const result = await request<Proposal>(`/api/v1/writebacks/${proposal.run_id}/rollback`, { decision: "APPROVE_ROLLBACK", comment: "Compensation explicitement approuvée depuis l’interface.", idempotency_key: writebackKey }); setProposal(result); setNotice(`Compensation enregistrée : ${result.status}.`); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Compensation impossible"); } finally { setBusy(null); }
+  }
+  async function reconcileWriteback(action: "ADOPT_COMPLETED_DOCUMENT" | "CONFIRM_NO_DOCUMENT_CREATED") {
+    if (!proposal || !writebackKey) return;
+    const documentUrn = action === "ADOPT_COMPLETED_DOCUMENT" ? window.prompt("URN du document vérifié dans DataHub :") : null;
+    if (action === "ADOPT_COMPLETED_DOCUMENT" && !documentUrn) return;
+    if (!window.confirm("Cette réconciliation exige une vérification humaine directe dans DataHub. Continuer ?")) return;
+    setBusy("reconcile"); setError(null);
+    try { const result = await request<Proposal>(`/api/v1/writebacks/${proposal.run_id}/reconcile`, { action, comment: "Réconciliation humaine après vérification directe dans DataHub.", idempotency_key: writebackKey, document_urn: documentUrn ?? undefined }); setProposal(result); setNotice(`Réconciliation enregistrée : ${result.status}.`); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Réconciliation impossible"); } finally { setBusy(null); }
   }
 
   return <main className={`shell page-${page}`}>
@@ -290,7 +306,7 @@ export default function App() {
     {critique && <section className="panel critique"><div className="panel-heading"><div><p className="kicker">Avis consultatif · {critique.model}</p><h2>Résultat NVIDIA</h2></div><span className="badge neutral">confiance {Math.round(critique.confidence * 100)}%</span></div><p>{critique.summary}</p>{critique.issues.map((issue, index) => <article className="issue" key={`${issue.finding}-${index}`}><b>{issue.severity}</b><p>{issue.finding}</p></article>)}</section>}
     {plan && <section className="panel action-panel"><div><p className="kicker">Étape 5 · action externe</p><h2>Revue finale indépendante</h2><p>OpenAI et Groq reçoivent le dossier conservé par le serveur sans voir le verdict de l’autre.</p></div><button className="primary" onClick={runJudges} disabled={busy !== null || !analysisRunId}>{busy === "judges" ? "Juges en cours…" : "Lancer OpenAI + Groq"}</button></section>}
     {judging && <section className="panel judges"><div className="panel-heading"><div><p className="kicker">Run serveur · {judging.run_id}</p><h2>Double revue</h2></div><span className={`badge ${statusTone(judging.result.aggregate_decision?.decision)}`}>{judging.result.aggregate_decision?.decision ?? "GATE 0"}</span></div>{!judging.result.deterministic_validation.passed && <div className="banner error">Gate 0 bloqué : {judging.result.deterministic_validation.errors.join(" · ")}</div>}<div className="judge-grid">{[judging.result.openai_verdict, judging.result.groq_verdict].map((verdict) => verdict && <JudgeCard key={verdict.judge_provider} verdict={verdict} />)}</div><p className="small"><b>Décision :</b> {judging.result.aggregate_decision?.rationale}</p>{judging.result.aggregate_decision?.decision === "FINALIZE_READ_ONLY" && <button className="secondary" onClick={prepareWriteback} disabled={busy !== null}>Préparer la proposition HITL</button>}</section>}
-    {proposal && <section className="panel approval"><div className="panel-heading"><div><p className="kicker">Étape 6 · HITL</p><h2>Proposition de write-back</h2></div><span className={`badge ${statusTone(proposal.status)}`}>{proposal.status}</span></div><p><b>Mutation autorisée :</b> {proposal.allowed_mutations.join(", ")}</p><details><summary>Document et snapshot</summary><pre>{proposal.document_content}</pre><pre>{JSON.stringify(proposal.snapshot, null, 2)}</pre></details><div className="approval-actions"><button className="primary" onClick={() => decide("APPROVE_REPORT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL"}>Approuver l’écriture</button><button className="secondary" onClick={() => decide("REQUEST_REVISION")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL"}>Demander une révision</button><button className="danger" onClick={() => decide("REJECT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL"}>Rejeter</button></div></section>}
+    {proposal && <section className="panel approval"><div className="panel-heading"><div><p className="kicker">Étape 6 · HITL</p><h2>Proposition de write-back</h2></div><span className={`badge ${statusTone(proposal.status)}`}>{proposal.status}</span></div><p><b>Mutation autorisée :</b> {proposal.allowed_mutations.join(", ")}</p><details><summary>Document et snapshot</summary><pre>{proposal.document_content}</pre><pre>{JSON.stringify(proposal.snapshot, null, 2)}</pre></details><div className="approval-actions"><button className="primary" onClick={() => decide("APPROVE_REPORT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || !writebackKey}>Approuver l’écriture</button><button className="secondary" onClick={() => decide("REQUEST_REVISION")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || !writebackKey}>Demander une révision</button><button className="danger" onClick={() => decide("REJECT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || !writebackKey}>Rejeter</button>{proposal.status === "COMPLETED" && <button className="danger" onClick={rollbackWriteback} disabled={busy !== null || !writebackKey}>Approuver la compensation</button>}{proposal.status === "ROLLBACK_UNCERTAIN" && <button className="danger" onClick={rollbackWriteback} disabled={busy !== null || !writebackKey}>Réessayer la compensation idempotente</button>}{["WRITEBACK_UNCERTAIN", "FAILED"].includes(proposal.status) && <><button className="secondary" onClick={() => reconcileWriteback("ADOPT_COMPLETED_DOCUMENT")} disabled={busy !== null || !writebackKey}>Adopter le document vérifié</button><button className="danger" onClick={() => reconcileWriteback("CONFIRM_NO_DOCUMENT_CREATED")} disabled={busy !== null || !writebackKey}>Confirmer l’absence et réautoriser</button></>}</div>{!writebackKey && <p className="small">La clé d’approbation n’est jamais renvoyée par l’API. Rechargez le workflow depuis le début si cette session a été perdue.</p>}</section>}
     <section className="panel history"><p className="kicker">Historique</p><h2>Exécutions récentes</h2>{history.length ? <ul>{history.map((item) => <li key={item.run_id}><code>{item.run_id.slice(0, 8)}</code> · <b className={`badge ${statusTone(item.decision ?? undefined)}`}>{item.decision ?? "GATE 0"}</b> · OpenAI {item.openai_status ?? "—"} · Groq {item.groq_status ?? "—"}</li>)}</ul> : <p className="small">Aucune revue persistée.</p>}</section>
   </main>;
 }
