@@ -90,6 +90,10 @@ def run(api_base_url: str, cases_path: Path, timeout_seconds: float, k: int) -> 
     expected_verified_cases = 0
     negative_cases = 0
     safely_blocked_cases = 0
+    factual_claims = 0
+    supported_claims = 0
+    escaped_unsupported_claims = 0
+    fully_supported_verified_answers = 0
 
     for case in cases:
         started = time.perf_counter()
@@ -117,6 +121,15 @@ def run(api_base_url: str, cases_path: Path, timeout_seconds: float, k: int) -> 
             action = (response.get("action_proposal") or {}).get("action")
             route_ok = action == expected.get("action", action)
             actual_verification = (response.get("verification") or {}).get("passed")
+            verification = response.get("verification") or {}
+            case_claims = int(verification.get("factual_claim_count") or 0)
+            case_supported = int(verification.get("supported_claim_count") or 0)
+            factual_claims += case_claims
+            supported_claims += case_supported
+            if actual_verification is True and case_claims == case_supported and case_claims > 0:
+                fully_supported_verified_answers += 1
+            if actual_verification is True:
+                escaped_unsupported_claims += max(0, case_claims - case_supported)
             expected_verification = expected.get("verification_passed", True)
             verification_ok = actual_verification == expected_verification
             usage = response.get("model_usage") or {}
@@ -130,7 +143,7 @@ def run(api_base_url: str, cases_path: Path, timeout_seconds: float, k: int) -> 
                 negative_cases += 1
                 safely_blocked_cases += int(actual_verification is False)
             router_correct += int(route_ok); verifier_correct += int(verification_ok); tool_correct += int(tool_ok)
-            outcomes.append({"id": case["id"], "status": "ok", "latency_ms": round(latency_ms, 1), "route_ok": route_ok, "tools_ok": tool_ok, "verification_ok": verification_ok, "citation_count": len(citations), "model_usage": usage})
+            outcomes.append({"id": case["id"], "status": "ok", "latency_ms": round(latency_ms, 1), "route_ok": route_ok, "tools_ok": tool_ok, "verification_ok": verification_ok, "citation_count": len(citations), "factual_claim_count": case_claims, "supported_claim_count": case_supported, "claim_coverage": verification.get("claim_coverage"), "model_usage": usage})
             latencies.append(latency_ms)
         except (HTTPError, URLError, TimeoutError, ValueError) as error:
             latencies.append((time.perf_counter() - started) * 1000)
@@ -154,6 +167,9 @@ def run(api_base_url: str, cases_path: Path, timeout_seconds: float, k: int) -> 
         "verification_accuracy": round(verifier_correct / total, 3) if total else 0.0,
         "verified_citation_coverage": round(cited_verified / expected_verified_cases, 3) if expected_verified_cases else None,
         "unsupported_claim_block_rate": round(safely_blocked_cases / negative_cases, 3) if negative_cases else None,
+        "claim_support_coverage": round(supported_claims / factual_claims, 3) if factual_claims else None,
+        "unsupported_claim_escape_rate": round(escaped_unsupported_claims / factual_claims, 3) if factual_claims else 0.0,
+        "fully_supported_verified_answer_rate": round(fully_supported_verified_answers / expected_verified_cases, 3) if expected_verified_cases else None,
         "latency_mean_ms": round(mean(latencies), 1) if latencies else 0.0,
         "latency_p50_ms": round(median(latencies), 1) if latencies else 0.0,
         "latency_p95_ms": round(percentile(latencies, 0.95), 1) if latencies else 0.0,

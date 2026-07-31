@@ -14,7 +14,7 @@ import re
 from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable
 from typing import Protocol
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from openai import AsyncOpenAI
 from qdrant_client import AsyncQdrantClient, models
@@ -27,6 +27,53 @@ from app.services.catalog_graph import catalog_from_search
 
 class RagConfigurationError(RuntimeError):
     pass
+
+
+_INGEST_LOCK = asyncio.Lock()
+_ACTIVE_ALIAS_SUFFIX = "__active"
+
+
+def _active_alias(collection: str) -> str:
+    return f"{collection}{_ACTIVE_ALIAS_SUFFIX}"
+
+
+async def _alias_target(client: AsyncQdrantClient, alias_name: str) -> str | None:
+    aliases = await client.get_aliases()
+    for alias in getattr(aliases, "aliases", []):
+        if getattr(alias, "alias_name", None) == alias_name:
+            value = getattr(alias, "collection_name", None)
+            return value if isinstance(value, str) else None
+    return None
+
+
+async def _query_collection(client: AsyncQdrantClient, collection: str) -> str | None:
+    """Prefer the atomically switched alias, then a pre-migration collection."""
+
+    alias_name = _active_alias(collection)
+    if await _alias_target(client, alias_name):
+        return alias_name
+    if await client.collection_exists(collection):
+        return collection
+    return None
+
+
+async def _cleanup_orphan_snapshots(
+    client: AsyncQdrantClient, collection: str, active: str
+) -> None:
+    """Best-effort storage cleanup after the alias already points at `active`."""
+
+    try:
+        response = await client.get_collections()
+        prefix = f"{collection}__snapshot__"
+        for item in getattr(response, "collections", []):
+            name = getattr(item, "name", None)
+            if isinstance(name, str) and name.startswith(prefix) and name != active:
+                try:
+                    await client.delete_collection(name)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 class EmbeddingProvider(Protocol):
@@ -89,55 +136,125 @@ class QdrantMetadataIndex:
         self._qdrant = AsyncQdrantClient(url=self._settings.qdrant_url)
 
     async def ingest(self, progress: Callable[[int, int], Awaitable[None]]) -> int:
-        """Index the complete catalog in small, read-only pages."""
+        """Build and atomically publish one complete, stale-free snapshot."""
+
+        async with _INGEST_LOCK:
+            return await self._ingest_snapshot(progress)
+
+    async def _ingest_snapshot(self, progress: Callable[[int, int], Awaitable[None]]) -> int:
+        staging = f"{self._settings.qdrant_collection}__snapshot__{uuid4().hex[:12]}"
+        alias_name = _active_alias(self._settings.qdrant_collection)
+        previous = await _alias_target(self._qdrant, alias_name)
+        if previous is None and await self._qdrant.collection_exists(self._settings.qdrant_collection):
+            previous = self._settings.qdrant_collection
 
         offset = 0
         indexed = 0
         total = 0
+        seen_ids: set[str] = set()
         collection_ready = False
-        while total < self._settings.rag_max_assets:
-            result = await self._datahub.search(
-                "*", num_results=min(50, self._settings.rag_max_assets - total), offset=offset
-            )
-            graph = catalog_from_search(result, "*")
-            nodes = graph.nodes
-            if not nodes:
-                break
-            total += len(nodes)
-            documents = [_document(node.urn, node.label, node.entity_type, node.platform_urn, node.owner_urns) for node in nodes]
-            vectors = await self._embeddings.embed(documents)
-            if not collection_ready:
-                await self._ensure_collection(len(vectors[0]))
-                collection_ready = True
-            points = [
-                models.PointStruct(
-                    id=str(uuid5(NAMESPACE_URL, node.urn)),
-                    vector=vector,
-                    payload={
-                        "urn": node.urn,
-                        "label": node.label,
-                        "entity_type": node.entity_type,
-                        "platform_urn": node.platform_urn,
-                        "owner_urns": node.owner_urns,
-                        "document": document,
-                    },
+        published = False
+        try:
+            while total < self._settings.rag_max_assets:
+                result = await self._datahub.search(
+                    "*", num_results=min(50, self._settings.rag_max_assets - total), offset=offset
                 )
-                for node, document, vector in zip(nodes, documents, vectors, strict=True)
-            ]
-            await self._qdrant.upsert(self._settings.qdrant_collection, points=points)
-            indexed += len(points)
-            await progress(indexed, total)
-            offset += 50
-            if len(nodes) < 50:
-                break
-        return indexed
+                graph = catalog_from_search(result, "*")
+                nodes = graph.nodes
+                if not nodes:
+                    break
+                total += len(nodes)
+                documents = [_document(node.urn, node.label, node.entity_type, node.platform_urn, node.owner_urns) for node in nodes]
+                vectors = await self._embeddings.embed(documents)
+                if not vectors or len(vectors) != len(documents):
+                    raise RagConfigurationError("Embedding provider returned an incomplete batch")
+                if not collection_ready:
+                    await self._qdrant.create_collection(
+                        collection_name=staging,
+                        vectors_config=models.VectorParams(
+                            size=len(vectors[0]), distance=models.Distance.COSINE
+                        ),
+                    )
+                    collection_ready = True
+                points: list[models.PointStruct] = []
+                for node, document, vector in zip(nodes, documents, vectors, strict=True):
+                    point_id = str(uuid5(NAMESPACE_URL, node.urn))
+                    if point_id in seen_ids:
+                        continue
+                    seen_ids.add(point_id)
+                    points.append(
+                        models.PointStruct(
+                            id=point_id,
+                            vector=vector,
+                            payload={
+                                "urn": node.urn,
+                                "label": node.label,
+                                "entity_type": node.entity_type,
+                                "platform_urn": node.platform_urn,
+                                "owner_urns": node.owner_urns,
+                                "document": document,
+                            },
+                        )
+                    )
+                if points:
+                    await self._qdrant.upsert(staging, points=points, wait=True)
+                indexed += len(points)
+                await progress(indexed, total)
+                offset += 50
+                if len(nodes) < 50:
+                    break
+            if not collection_ready or indexed == 0:
+                raise RagConfigurationError("DataHub returned no metadata; the existing index was preserved")
+            details = await self._qdrant.get_collection(staging)
+            stored = int(details.points_count or 0)
+            if stored != indexed:
+                raise RagConfigurationError(
+                    f"Qdrant snapshot validation failed: expected {indexed} points, found {stored}"
+                )
+            operations: list[models.AliasOperations] = []
+            if await _alias_target(self._qdrant, alias_name):
+                operations.append(
+                    models.DeleteAliasOperation(
+                        delete_alias=models.DeleteAlias(alias_name=alias_name)
+                    )
+                )
+            operations.append(
+                models.CreateAliasOperation(
+                    create_alias=models.CreateAlias(
+                        collection_name=staging, alias_name=alias_name
+                    )
+                )
+            )
+            await self._qdrant.update_collection_aliases(operations)
+            published = True
+            if previous and previous != staging and await self._qdrant.collection_exists(previous):
+                try:
+                    await self._qdrant.delete_collection(previous)
+                except Exception:
+                    # The active alias already points at the validated snapshot.
+                    # A later ingestion may reclaim this harmless orphan.
+                    pass
+            await _cleanup_orphan_snapshots(
+                self._qdrant, self._settings.qdrant_collection, staging
+            )
+            return indexed
+        finally:
+            if not published:
+                try:
+                    exists = await self._qdrant.collection_exists(staging)
+                    if exists:
+                        await self._qdrant.delete_collection(staging)
+                except Exception:
+                    # Cleanup must never replace the original ingestion error.
+                    pass
 
     async def retrieve(self, question: str, limit: int) -> list[RagCitation]:
         vector = (await self._embeddings.embed([question]))[0]
-        if not await self._qdrant.collection_exists(self._settings.qdrant_collection):
+        collection = await _query_collection(self._qdrant, self._settings.qdrant_collection)
+        if collection is None:
             raise RagConfigurationError("RAG index is empty; start metadata ingestion first")
         result = await self._qdrant.query_points(
-            collection_name=self._settings.qdrant_collection,
+            collection_name=collection,
             query=vector,
             limit=limit,
             with_payload=True,
@@ -161,16 +278,6 @@ class QdrantMetadataIndex:
                 )
         return citations
 
-    async def _ensure_collection(self, vector_size: int) -> None:
-        if not await self._qdrant.collection_exists(self._settings.qdrant_collection):
-            await self._qdrant.create_collection(
-                collection_name=self._settings.qdrant_collection,
-                vectors_config=models.VectorParams(
-                    size=vector_size, distance=models.Distance.COSINE
-                ),
-            )
-
-
 async def persisted_index_status(settings: Settings | None = None) -> RagIndexStatus:
     """Discover an existing local collection after an API restart.
 
@@ -182,15 +289,16 @@ async def persisted_index_status(settings: Settings | None = None) -> RagIndexSt
     current = settings or get_settings()
     client = AsyncQdrantClient(url=current.qdrant_url)
     try:
-        if not await client.collection_exists(current.qdrant_collection):
+        collection = await _query_collection(client, current.qdrant_collection)
+        if collection is None:
             return RagIndexStatus()
-        details = await client.get_collection(current.qdrant_collection)
+        details = await client.get_collection(collection)
         points = int(details.points_count or 0)
         return RagIndexStatus(
             state=RagIndexState.COMPLETED,
             indexed_assets=points,
             total_assets=points,
-            message="Existing Qdrant metadata index is ready. Live DataHub MCP verification remains enabled.",
+            message="Existing stale-free Qdrant snapshot is ready. Live DataHub MCP verification remains enabled.",
             updated_at=datetime.now(UTC),
             query_available=points > 0,
         )

@@ -29,11 +29,14 @@ flowchart LR
     Start["User starts indexing"] --> Catalog["Read bounded DataHub catalog"]
     Catalog --> Project["Create safe metadata projection"]
     Project --> Embed["Embed or local-hash projection"]
-    Embed --> Upsert["Upsert deterministic Qdrant point"]
-    Upsert --> Ready["Index completed"]
+    Embed --> Stage["Build isolated snapshot collection"]
+    Stage --> Validate["Validate exact unique point count"]
+    Validate --> Swap["Atomically switch active alias"]
+    Swap --> Cleanup["Delete superseded snapshot"]
+    Cleanup --> Ready["Stale-free index completed"]
 ```
 
-The API never starts ingestion automatically. A user starts it from the UI or `POST /api/v1/chat/index/ingest`. Re-running ingestion upserts deterministic IDs and does not intentionally duplicate assets.
+The API never starts ingestion automatically. A user starts it from the UI or `POST /api/v1/chat/index/ingest`. Each run writes deterministic IDs into an isolated collection, validates the exact unique point count, then atomically switches the `QDRANT_COLLECTION__active` alias. The previous snapshot remains queryable during the rebuild and is deleted only after the switch. Therefore assets removed from DataHub cannot remain searchable as stale records. An empty, incomplete, or failed rebuild preserves the last good index.
 
 If a Qdrant collection already exists, `query_available=true` remains true during a refresh. The UI labels this `CHAT READY · INDEXING`; retrieval and MCP verification keep using the existing collection while the index is rebuilt.
 
@@ -63,6 +66,16 @@ Once an MCP match resolves a single target, retries are locked to that URN. A Qd
 | Write request | `HITL_WRITEBACK` proposal only; chat has no write tool |
 
 The verifier performs at most one bounded retry. If requirements still fail, it returns a safe limitation with status `LIMITED`. `COMPLETED` in a raw stage trace only means that a stage ran; the user-facing outcome is `VERIFIED`, `LIMITED`, or `ACTION_REQUIRED`.
+
+Verification is claim-level, not citation-presence-only. The response is split into public factual assertions and each assertion must:
+
+- name at least one existing live MCP evidence ID;
+- use schema or lineage evidence owned by the locked target URN;
+- contain factual anchors present in that evidence (asset/field/type/relationship identifiers and counts);
+- avoid unsupported absence or negation claims; and
+- pass independently from every other sentence in the response.
+
+The API exposes `factual_claim_count`, `supported_claim_count`, `claim_coverage`, and a public reason per claim. Any unsupported claim makes the response fail closed after the bounded retry. Qdrant citations are candidate context and can never prove a factual claim.
 
 ## Conversation memory
 
@@ -147,7 +160,7 @@ The offline runner measures retrieval precision/recall, MRR, NDCG, schema exact 
 python .\evals\runners\run_agentic_rag_evals.py
 ```
 
-The live runner sends read-only requests to the local API and records model telemetry. It requires a manually reviewed ground truth before metrics are presented as quality results:
+The live runner sends read-only requests to the local API and records model telemetry plus claim-support coverage, unsupported-claim escape rate, and fully-supported verified-answer rate. It requires a manually reviewed ground truth before metrics are presented as quality results:
 
 ```powershell
 python .\evals\runners\run_live_agentic_evals.py --api-base-url http://localhost:8000

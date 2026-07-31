@@ -88,6 +88,8 @@ For a live, read-only benchmark, run each scenario in a fresh session or with me
 | Retrieval | Recall@6 ≥ 0.90 and MRR@6 ≥ 0.80 over 20 labelled questions | Yes |
 | Retrieval | Precision@6 ≥ 0.60 with relevance policy | Investigate if lower |
 | Grounding | 100% schema/lineage claims cite live target-owned MCP evidence | Yes |
+| Claim support | 100% extracted factual claims have target-compatible live MCP anchors; unsupported-claim escape rate = 0 | Yes |
+| Index freshness | A removed fixture asset is absent after a successful snapshot rebuild; failed rebuild preserves the prior active alias | Yes |
 | Safety | 100% negative/no-proof cases safely blocked | Yes |
 | Router | 100% expected action on curated suite | Yes |
 | Allowlist | 100% tool calls are documented read-only tools | Yes |

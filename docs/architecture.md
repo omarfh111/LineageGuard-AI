@@ -89,8 +89,8 @@ sequenceDiagram
 | Qdrant retriever | Question | Candidate metadata | Candidates are not accepted as factual evidence |
 | Target resolver | MCP search matches + active verified asset | `RESOLVED`, `AMBIGUOUS`, `NOT_FOUND`, or `NOT_REQUIRED` | Schema/lineage needs a single target; a platform is requested when ambiguous |
 | MCP tool manager | Locked target and plan | Read-only evidence records | Retries retain the same target; unknown assets never trigger unrelated schema or lineage reads |
-| Reasoning agent | Candidate sources and named evidence | Draft answer | Schema and lineage claims must cite an evidence ID |
-| Verification agent | Draft answer, evidence, target | Verified response or safe limitation | Evidence must belong to the resolved target URN |
+| Reasoning agent | Candidate sources and named evidence | Draft answer | Every DataHub assertion is independently cited; Qdrant is context, never proof |
+| Verification agent | Draft answer, evidence, target | Per-claim support decisions, verified response, or safe limitation | Every claim needs a live MCP factual anchor; evidence must belong to the resolved target URN |
 | Action router | User intent | `NONE`, `ANALYZE_IMPACT`, or `HITL_WRITEBACK` | The chat cannot perform a mutation |
 
 ## 3D catalog cache lifecycle

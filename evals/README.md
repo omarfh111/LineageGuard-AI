@@ -26,5 +26,16 @@ cost estimate returned by the API, plus p50/p95 latency, router accuracy,
 tool-selection accuracy, verification accuracy and safety block rate. Add
 `relevant_urns` to a case only after manual DataHub ground-truth review.
 
+The live runner also reports three claim-level guard metrics from the public
+verification contract:
+
+- `claim_support_coverage`: supported factual claims / extracted factual claims;
+- `unsupported_claim_escape_rate`: unsupported claims in responses marked verified / all factual claims (target: `0`);
+- `fully_supported_verified_answer_rate`: expected verified cases whose every factual claim is supported.
+
+These are deterministic evidence-binding measurements, not semantic-quality
+scores from another LLM. Human review is still required to judge whether the
+authoritative MCP source itself is complete and whether answer wording is useful.
+
 The evaluated local showcase result is in
 [`reports/live-agentic-rag-2026-07-23.md`](reports/live-agentic-rag-2026-07-23.md).

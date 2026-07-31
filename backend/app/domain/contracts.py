@@ -531,12 +531,26 @@ class AgentEvidence(BaseModel):
     facts: list[str] = Field(default_factory=list)
 
 
+class FactualClaimVerification(BaseModel):
+    """Public, deterministic support decision for one answer assertion."""
+
+    claim_id: str
+    text: str
+    evidence_ids: list[str] = Field(default_factory=list)
+    supported: bool
+    reason: str
+
+
 class VerificationResult(BaseModel):
     """Deterministic evidence-bound verification, not hidden chain-of-thought."""
 
     passed: bool
     checks: list[str] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
+    claims: list[FactualClaimVerification] = Field(default_factory=list)
+    factual_claim_count: int = Field(default=0, ge=0)
+    supported_claim_count: int = Field(default=0, ge=0)
+    claim_coverage: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class ChatActionType(StrEnum):

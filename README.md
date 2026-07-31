@@ -189,7 +189,7 @@ The API starts loading the catalog when the **backend process starts**, before a
 3. Read the human-facing answer, target-resolution card, evidence citations, and optional technical trace.
 4. Use **Clear memory** before independent professional tests; the normal six-turn memory remains useful for conversational follow-ups.
 
-Re-indexing is non-blocking when a usable Qdrant collection already exists: the status becomes `CHAT READY · INDEXING`, and questions remain available against the existing index while the replacement index runs.
+Re-indexing is non-blocking when a usable Qdrant collection already exists: the status becomes `CHAT READY · INDEXING`, and questions remain available against the existing index while a separate snapshot is built. After exact point-count validation, a Qdrant alias switch publishes the complete snapshot atomically and the superseded collection is removed. Failed or empty rebuilds preserve the previous index; DataHub deletions therefore remove stale retrieval records on the next successful ingestion.
 
 ### Impact, review, and HITL
 
@@ -314,7 +314,7 @@ Set-Location ..
 python .\evals\runners\run_agentic_rag_evals.py
 ```
 
-The latest committed offline baseline measures retrieval identity, schema and lineage facts, tool selection, citation coverage, verifier blocking, latency, and cost without a provider call. The dated live showcase benchmark records `Precision@6=0.667`, `Recall@6=1.000`, `MRR@6=1.000`, and `NDCG@6=1.000` for its reviewed six-scenario suite. It is a local showcase measurement, not a production-quality claim.
+The latest committed offline baseline measures retrieval identity, schema and lineage facts, tool selection, citation coverage, verifier blocking, latency, and cost without a provider call. Runtime verification now audits every extracted factual claim and exposes claim count, supported count, coverage, evidence IDs, and a public support reason. The live runner adds claim-support coverage, unsupported-claim escape rate, and fully-supported verified-answer rate. The dated live showcase benchmark records `Precision@6=0.667`, `Recall@6=1.000`, `MRR@6=1.000`, and `NDCG@6=1.000` for its reviewed six-scenario suite; it predates the new claim-level metrics and is not silently re-labelled as a new result.
 
 For a professional end-to-end acceptance protocol, including required artifacts and a 20-query reviewed ground truth, use [the acceptance test plan](docs/acceptance-test-plan.md). For a dedicated disposable-environment write proof, use [the live write-back proof](docs/live-writeback-proof.md).
 
@@ -336,7 +336,7 @@ For a professional end-to-end acceptance protocol, including required artifacts 
 
 - The 3D cache is in-memory and deliberately does not survive a backend restart.
 - External DataHub changes are detected by bounded polling; there is no webhook integration.
-- The Qdrant index contains metadata projections, so live MCP verification is always required before factual schema or lineage claims.
+- The Qdrant index contains metadata projections and is published as a validated stale-free snapshot, but live MCP verification is still required for every factual DataHub claim.
 - Live quality, provider reliability, cost, and write-back success must be reported from reviewed runs; offline metrics are not substitutes.
 - The 3D rendering dependency is code-split but remains a large optional browser chunk.
 

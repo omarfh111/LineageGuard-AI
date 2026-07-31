@@ -90,12 +90,12 @@ Example query:
 | `target_resolution` | Exact target selection, ambiguity, no match, or no target needed |
 | `citations` | RAG candidates and/or MCP-verified citations |
 | `evidence` | Named evidence records used by the verifier |
-| `verification` | Deterministic validation result and blocking issues |
+| `verification` | Deterministic result, blocking issues, per-claim evidence IDs/reasons, supported/total counts, and `claim_coverage` |
 | `action_proposal` | `NONE`, `ANALYZE_IMPACT`, or `HITL_WRITEBACK` |
 | `agent_trace` | Public execution trace, never private reasoning |
 | `model_usage` | Safe token/cost telemetry when available |
 
-An index can be `RUNNING` while `query_available=true`: a prior Qdrant collection is usable and the chat should remain available during re-indexing.
+An index can be `RUNNING` while `query_available=true`: the active Qdrant alias keeps the prior complete snapshot usable while a replacement is built. A validated alias switch publishes the new snapshot atomically and removes records that disappeared from DataHub.
 
 When an `ANALYZE_IMPACT` response resolves exactly one live MCP target, it also
 returns `analysis_handoff_id` and `analysis_handoff_expires_at`. The frontend

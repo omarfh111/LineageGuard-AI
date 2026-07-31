@@ -10,6 +10,7 @@ from app.services.chat_agent import (
     KeywordPlanningProvider,
     OpenAIChatCompletionProvider,
     OpenAIPlanningProvider,
+    _verify_factual_claims,
     _propose_action,
 )
 
@@ -93,7 +94,7 @@ class SchemaDataHub:
 class AnyCompletion:
     async def answer(self, question: str, sources: list[RagCitation], evidence: list) -> str:
         schema = next(item for item in evidence if item.kind == "schema")
-        return f"Grounded metadata answer. [E1] [{schema.id}]"
+        return f"{schema.facts[0]}. [{schema.id}]"
 
 
 class NoMatchDataHub:
@@ -353,3 +354,93 @@ async def test_snowflake_orders_schema_is_locked_to_the_exact_resolved_urn() -> 
     assert datahub.schema_calls == [datahub.snowflake_orders]
     assert all(datahub.order_details not in evidence.asset_urn for evidence in response.evidence)
     assert response.verification and response.verification.passed
+
+
+def test_claim_verifier_checks_every_sentence_not_only_citation_presence() -> None:
+    evidence = [
+        AgentEvidence(
+            id="E-schema-orders",
+            kind="schema",
+            asset_urn=SnowflakeOrdersDataHub.snowflake_orders,
+            summary="DataHub schema lookup for orders returned 1 field.",
+            facts=["column=order_id, type=NUMBER"],
+        )
+    ]
+
+    claims = _verify_factual_claims(
+        "order_id has type NUMBER. customer_secret has type TEXT. [E-schema-orders]",
+        evidence,
+        {SnowflakeOrdersDataHub.snowflake_orders},
+    )
+
+    assert [claim.supported for claim in claims] == [True, False]
+    assert "customer_secret" in claims[1].reason
+
+
+def test_claim_verifier_rejects_unknown_and_wrong_target_evidence() -> None:
+    evidence = [
+        AgentEvidence(
+            id="E-schema-details",
+            kind="schema",
+            asset_urn=SnowflakeOrdersDataHub.order_details,
+            summary="Schema for order_details.",
+            facts=["column=order_id, type=NUMBER"],
+        )
+    ]
+
+    unknown = _verify_factual_claims(
+        "order_id has type NUMBER. [E-does-not-exist]",
+        evidence,
+        {SnowflakeOrdersDataHub.snowflake_orders},
+    )
+    wrong_target = _verify_factual_claims(
+        "order_id has type NUMBER. [E-schema-details]",
+        evidence,
+        {SnowflakeOrdersDataHub.snowflake_orders},
+    )
+
+    assert not unknown[0].supported
+    assert "Unknown evidence IDs" in unknown[0].reason
+    assert not wrong_target[0].supported
+    assert "different asset" in wrong_target[0].reason
+
+
+def test_claim_verifier_rejects_invented_counts_and_unsupported_absence() -> None:
+    evidence = [
+        AgentEvidence(
+            id="E-lineage-orders",
+            kind="lineage",
+            asset_urn=SnowflakeOrdersDataHub.snowflake_orders,
+            summary="DataHub downstream lineage for orders returned 1 direct relationship.",
+            facts=["downstream=urn:li:dataset:dashboard_orders, hops=1"],
+        )
+    ]
+
+    claims = _verify_factual_claims(
+        "orders has 36 downstream assets. orders has no owner. [E-lineage-orders]",
+        evidence,
+        {SnowflakeOrdersDataHub.snowflake_orders},
+    )
+
+    assert [claim.supported for claim in claims] == [False, False]
+    assert "36" in claims[0].reason
+    assert "absence claim" in claims[1].reason.lower()
+
+
+def test_claim_verifier_rejects_an_invented_ordinary_language_property() -> None:
+    evidence = [
+        AgentEvidence(
+            id="E1",
+            kind="search",
+            asset_urn=SnowflakeOrdersDataHub.snowflake_orders,
+            summary="DataHub search matched orders (DATASET).",
+            facts=["asset=orders", "entity_type=DATASET"],
+        )
+    ]
+
+    claim = _verify_factual_claims(
+        "orders is business-critical. [E1]", evidence, set()
+    )[0]
+
+    assert not claim.supported
+    assert "business-critical" in claim.reason
