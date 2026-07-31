@@ -45,6 +45,11 @@ For a live, read-only benchmark, run each scenario in a fresh session or with me
 | CAT-03 | Non-blocking refresh | Click **Refresh from DataHub** with a visible graph. | Current graph remains visible; refresh returns to `READY`; no reset to zero. |
 | CAT-04 | Node observability | Hover and click a dataset after an impact analysis. | Tooltip/panel show URN, type, platform, owners, and timestamped LineageGuard actions. |
 | CAT-05 | Filter reset | Search/filter then return query, type, and platform to all. | Full cached graph is restored without a new catalog traversal. |
+| CAT-06 | Stuck refresh recovery | Delay an MCP call beyond the configured test watchdog while a good graph exists. | State becomes `STALE`, graph and generation remain unchanged, failure is visible, and the next healthy retry returns `READY`. |
+| CAT-07 | Schema change detection | Baseline one probed asset, change a field name/type in disposable DataHub metadata, and wait for its rotating probe. | `detected_change` identifies `schema:<URN>` and a complete atomic refresh advances the generation. |
+| CAT-08 | Lineage change detection | Add/remove one disposable direct lineage edge and wait for its probe. | `detected_change` identifies `lineage:<URN>`; the old graph stays visible until the new generation is complete. |
+| CAT-09 | Concurrency and timeout | Observe DataHub during full enrichment and query chat concurrently. | MCP in-flight batch never exceeds the configured limit; chat remains bounded; no unbounded waiting-task fan-out. |
+| CAT-10 | Unchanged polling | Record `generation`, wait through at least three scheduled polls without changing DataHub, then read status again. | `last_checked_at` advances while `generation` and `last_updated_at` remain unchanged; no full refresh starts. |
 | RAG-01 | Retrieval benchmark | Run at least 20 manually labelled cross-platform queries. | Report Precision@6, Recall@6, MRR@6, and NDCG@6 with documented relevance policy. |
 | RAG-02 | Generic catalog | Ask `Tell me about the orders dataset`. | Live MCP search evidence supports a verified answer or an explicit safe limitation. |
 | RAG-03 | Ambiguous lineage | Ask for downstream lineage of `orders` without platform. | `AMBIGUOUS`; agent asks for platform and does not arbitrarily call lineage. |

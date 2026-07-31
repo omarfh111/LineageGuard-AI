@@ -5,7 +5,11 @@ import pytest
 
 from app.datahub import mcp_client as mcp_client_module
 from app.core.config import Settings
-from app.datahub.mcp_client import DataHubConfigurationError, DataHubMcpClient
+from app.datahub.mcp_client import (
+    DataHubConfigurationError,
+    DataHubMcpClient,
+    DataHubMcpTimeoutError,
+)
 
 
 @pytest.mark.asyncio
@@ -151,3 +155,55 @@ async def test_client_bounds_batch_concurrency_to_protect_interactive_reads(
 
     assert len(results) == 7
     assert peak == 2
+    assert [item["arguments"]["query"] for item in results] == [str(i) for i in range(7)]
+
+
+@pytest.mark.asyncio
+async def test_client_cancels_a_stuck_mcp_session_at_the_global_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled = asyncio.Event()
+
+    class FakeStdio:
+        async def __aenter__(self) -> tuple[object, object]:
+            return object(), object()
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    class HangingSession:
+        async def __aenter__(self) -> "HangingSession":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def initialize(self) -> None:
+            return None
+
+        async def call_tool(self, tool_name: str, arguments: dict[str, object]) -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    monkeypatch.setattr(mcp_client_module, "stdio_client", lambda parameters: FakeStdio())
+    monkeypatch.setattr(
+        mcp_client_module,
+        "ClientSession",
+        lambda read_stream, write_stream: HangingSession(),
+    )
+    client = DataHubMcpClient(
+        Settings(
+            app_env="test",
+            database_url="sqlite:///./test.db",
+            datahub_gms_url="http://localhost:8080",
+            datahub_gms_token=None,
+            datahub_mcp_timeout_seconds=0.03,  # type: ignore[arg-type]
+        )
+    )
+
+    with pytest.raises(DataHubMcpTimeoutError, match="timed out"):
+        await client.search("orders")
+
+    assert cancelled.is_set()

@@ -37,12 +37,21 @@ At a backend restart, `RUNNING` is normal only until the bounded root catalog lo
 
 If the status repeatedly returns to a full refresh after it reached `READY`:
 
-1. Save the cache JSON and the `refresh_reason` field.
+1. Save the cache JSON, including `refresh_reason`, `generation`,
+   `consecutive_failures`, `last_error`, and `last_checked_at`.
 2. Verify the backend image was rebuilt after the cache reliability update.
 3. Check that `CATALOG_MAX_ASSETS` is large enough for the local catalog.
 4. Check backend logs for DataHub MCP errors.
 
-The server detects external changes by polling root URNs; it intentionally does not use browser page load as a refresh trigger.
+The server detects root membership/metadata changes and performs rotating exact
+schema/lineage probes. A schema or lineage change may therefore take up to
+`ceil(asset_count / CATALOG_CHANGE_PROBE_ASSETS)` polling cycles to be seen.
+Browser page load never triggers a refresh.
+
+If `last_error` reports the refresh watchdog, do not increase concurrency.
+First verify DataHub GMS health, then tune `DATAHUB_MCP_TIMEOUT_SECONDS` and
+`CATALOG_REFRESH_TIMEOUT_SECONDS`. The previous graph remains available and
+the worker retries automatically.
 
 ## Filters do not show the full graph again
 

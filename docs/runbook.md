@@ -76,8 +76,15 @@ Expected services are `backend`, `frontend`, and `qdrant`, all healthy. Open <ht
 1. Starting the backend schedules a server-owned 3D catalog load.
 2. The root catalog becomes `READY` after its bounded assets are available. This may occur before all relationships have been enriched.
 3. The UI polls the cache every five seconds and remains interactive while edges are being added in the background.
-4. The API polls root URNs at the configured interval. A real changed identity must persist for two consecutive polls before a full refresh starts.
-5. A manual refresh or a LineageGuard action marks the graph stale, keeps the old graph visible, and performs an atomic graph replacement when finished.
+4. The API polls root URNs and stable catalog metadata at the configured
+   interval. It also rotates through `CATALOG_CHANGE_PROBE_ASSETS` exact assets
+   to compare schema and direct-lineage fingerprints.
+5. A manual refresh, detected change, or LineageGuard action keeps the old
+   graph visible and performs an atomic replacement only after a complete
+   successful traversal.
+6. A stuck traversal is cancelled after `CATALOG_REFRESH_TIMEOUT_SECONDS`.
+   The cache becomes `STALE` when a prior graph exists and retries
+   automatically; the frontend shows the generation, last check, and error.
 
 Do not expect the **Load 50 more assets** control when the cache already holds every discovered asset within `CATALOG_MAX_ASSETS`.
 

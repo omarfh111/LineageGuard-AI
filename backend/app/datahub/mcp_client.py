@@ -29,6 +29,10 @@ class DataHubConfigurationError(RuntimeError):
     """Raised before an MCP process is started with incomplete configuration."""
 
 
+class DataHubMcpTimeoutError(DataHubConfigurationError):
+    """Raised when a bounded MCP session cannot finish before its deadline."""
+
+
 class DataHubMcpClient:
     """Call only allowlisted DataHub MCP read tools via an isolated stdio process."""
 
@@ -82,6 +86,25 @@ class DataHubMcpClient:
             if tool_name not in READ_ONLY_TOOLS:
                 raise ValueError(f"MCP tool {tool_name!r} is not allowlisted")
 
+        try:
+            return await asyncio.wait_for(
+                self._call_tools_session(calls),
+                timeout=self._settings.datahub_mcp_timeout_seconds,
+            )
+        except TimeoutError as error:
+            raise DataHubMcpTimeoutError(
+                f"DataHub MCP timed out after {self._settings.datahub_mcp_timeout_seconds}s"
+            ) from error
+        except (OSError, BaseExceptionGroup) as error:
+            raise DataHubConfigurationError(
+                "DataHub MCP is unavailable; verify that local GMS is running and reachable"
+            ) from error
+
+    async def _call_tools_session(
+        self, calls: Sequence[tuple[str, Mapping[str, Any]]]
+    ) -> list[dict[str, Any]]:
+        """Run validated calls in bounded chunks inside one MCP process."""
+
         parameters = StdioServerParameters(
             command="mcp-server-datahub",
             env=self._server_environment(),
@@ -90,24 +113,21 @@ class DataHubMcpClient:
             async with stdio_client(parameters) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()
-                    # A catalog batch can contain 50 lineage reads. Starting
-                    # all of them at once overwhelms a local DataHub
-                    # Quickstart and starves interactive chat requests. The
-                    # configured catalog limit must also apply to the optimized
-                    # single-session path.
-                    semaphore = asyncio.Semaphore(
-                        max(1, self._settings.catalog_lineage_concurrency)
-                    )
-
-                    async def call_bounded(
-                        tool_name: str, arguments: Mapping[str, Any]
-                    ) -> Any:
-                        async with semaphore:
-                            return await session.call_tool(tool_name, dict(arguments))
-
-                    results = await asyncio.gather(
-                        *(call_bounded(tool_name, arguments) for tool_name, arguments in calls)
-                    )
+                    results: list[Any] = []
+                    limit = max(1, self._settings.catalog_lineage_concurrency)
+                    # Chunking is intentional: a semaphore around thousands
+                    # of eagerly-created tasks still consumes memory and makes
+                    # cancellation sluggish when the refresh watchdog fires.
+                    for start in range(0, len(calls), limit):
+                        batch = calls[start : start + limit]
+                        results.extend(
+                            await asyncio.gather(
+                                *(
+                                    session.call_tool(tool_name, dict(arguments))
+                                    for tool_name, arguments in batch
+                                )
+                            )
+                        )
                     return [result.model_dump(mode="json") for result in results]
         except (OSError, BaseExceptionGroup) as error:
             raise DataHubConfigurationError(
@@ -177,6 +197,33 @@ class DataHubMcpClient:
             ]
         )
 
+    async def inspect_catalog_assets(
+        self, urns: Sequence[str]
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        """Read schema and direct lineage for a bounded change-detection probe."""
+
+        calls: list[tuple[str, Mapping[str, Any]]] = []
+        for urn in urns:
+            calls.extend(
+                [
+                    ("list_schema_fields", {"urn": urn}),
+                    (
+                        "get_lineage",
+                        {
+                            "urn": urn,
+                            "upstream": False,
+                            "max_hops": 1,
+                            "max_results": 100,
+                        },
+                    ),
+                ]
+            )
+        results = await self.call_tools(calls)
+        return [
+            (results[index], results[index + 1])
+            for index in range(0, len(results), 2)
+        ]
+
     async def save_document(self, title: str, content: str, related_asset: str, urn: str | None = None) -> dict[str, Any]:
         """The sole write-back tool, intended only for an approved report document."""
         if not self._settings.datahub_writeback_enabled:
@@ -187,11 +234,25 @@ class DataHubMcpClient:
         arguments: dict[str, Any] = {"document_type": "Analysis", "title": title, "content": content, "related_assets": [related_asset]}
         if urn:
             arguments["urn"] = urn
-        async with stdio_client(parameters) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                result = await session.call_tool("save_document", arguments)
-                return result.model_dump(mode="json")
+        async def execute() -> dict[str, Any]:
+            async with stdio_client(parameters) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    result = await session.call_tool("save_document", arguments)
+                    return result.model_dump(mode="json")
+
+        try:
+            return await asyncio.wait_for(
+                execute(), timeout=self._settings.datahub_mcp_timeout_seconds
+            )
+        except TimeoutError as error:
+            raise DataHubMcpTimeoutError(
+                f"DataHub MCP write timed out after {self._settings.datahub_mcp_timeout_seconds}s"
+            ) from error
+        except (OSError, BaseExceptionGroup) as error:
+            raise DataHubConfigurationError(
+                "DataHub MCP write is unavailable; reconciliation may be required"
+            ) from error
 
 
 def get_datahub_client() -> DataHubMcpClient:

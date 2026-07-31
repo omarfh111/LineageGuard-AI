@@ -477,6 +477,13 @@ class CatalogCacheStatus(BaseModel):
     message: str = "Catalog cache has not started."
     last_updated_at: datetime | None = None
     refresh_reason: str | None = None
+    refresh_started_at: datetime | None = None
+    last_checked_at: datetime | None = None
+    refresh_in_progress: bool = False
+    consecutive_failures: int = Field(default=0, ge=0)
+    last_error: str | None = None
+    detected_change: str | None = None
+    generation: int = Field(default=0, ge=0)
 
 
 class CatalogCacheSnapshot(BaseModel):

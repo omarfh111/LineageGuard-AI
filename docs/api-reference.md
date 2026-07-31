@@ -18,6 +18,11 @@ Base URL: `http://localhost:8000`. The generated OpenAPI contract at <http://loc
 
 The DataHub bridge enforces a server-side allowlist. These routes cannot call write tools.
 
+The cache response includes `refresh_in_progress`, `refresh_started_at`,
+`last_updated_at`, `last_checked_at`, `generation`, `consecutive_failures`,
+`last_error`, and `detected_change`. A `STALE` response with nodes means the
+last complete graph is still safe to display while the worker retries.
+
 ## Impact workflow
 
 The frontend uses grouped workflow routes. The lower-level read and planning

@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from app.core.config import Settings
@@ -27,6 +29,65 @@ class CacheClient:
     async def get_lineage(self, urn: str, direction: str, max_hops: int, max_results: int = 100) -> dict:
         assert (urn, direction, max_hops) == (SOURCE, "DOWNSTREAM", 1)
         return {"structuredContent": {"downstreams": {"total": 1, "searchResults": [{"degree": 1, "entity": entity(TARGET, "orders_dashboard", "urn:li:dataPlatform:tableau")}]}}}
+    async def list_schema_fields(self, urn: str) -> dict:
+        assert urn == SOURCE
+        return {
+            "structuredContent": {
+                "fields": [{"fieldPath": "order_id", "type": "NUMBER"}]
+            }
+        }
+
+
+class MutableCacheClient(CacheClient):
+    def __init__(self) -> None:
+        self.schema_type = "NUMBER"
+        self.lineage_target = TARGET
+        self.hang_search = False
+        self.fail_lineage = False
+
+    async def search(self, query: str, num_results: int = 10, offset: int = 0) -> dict:
+        if self.hang_search:
+            await asyncio.Event().wait()
+        return await super().search(query, num_results, offset)
+
+    async def list_schema_fields(self, urn: str) -> dict:
+        return {
+            "structuredContent": {
+                "fields": [{"fieldPath": "order_id", "type": self.schema_type}]
+            }
+        }
+
+    async def get_lineage(self, urn: str, direction: str, max_hops: int, max_results: int = 100) -> dict:
+        if self.fail_lineage:
+            raise OSError("temporary lineage failure")
+        return {
+            "structuredContent": {
+                "downstreams": {
+                    "total": 1,
+                    "searchResults": [
+                        {
+                            "degree": 1,
+                            "entity": entity(
+                                self.lineage_target,
+                                "downstream",
+                                "urn:li:dataPlatform:tableau",
+                            ),
+                        }
+                    ],
+                }
+            }
+        }
+
+
+class RecoveringCacheClient(CacheClient):
+    def __init__(self) -> None:
+        self.search_attempts = 0
+
+    async def search(self, query: str, num_results: int = 10, offset: int = 0) -> dict:
+        self.search_attempts += 1
+        if self.search_attempts == 1:
+            await asyncio.Event().wait()
+        return await super().search(query, num_results, offset)
 
 
 @pytest.mark.asyncio
@@ -75,3 +136,159 @@ async def test_cache_requires_two_identical_changed_polls_before_refreshing() ->
     cache._root_identity = frozenset({"urn:li:dataset:(urn:li:dataPlatform:dbt,old.orders,PROD)"})
     assert not await cache._catalog_identity_changed()
     assert await cache._catalog_identity_changed()
+
+
+@pytest.mark.asyncio
+async def test_cache_detects_a_schema_change_without_changing_root_urns() -> None:
+    client = MutableCacheClient()
+    settings = Settings(
+        app_env="test", database_url="sqlite:///:memory:", datahub_gms_url="http://localhost:8080",
+        datahub_gms_token=None, catalog_autoload=False, catalog_max_assets=20,
+        catalog_max_edges=20, catalog_change_probe_assets=1,
+    )
+    cache = CatalogCache(settings, client_factory=lambda: client)  # type: ignore[arg-type]
+    await cache._refresh("initial")
+
+    assert not await cache._catalog_identity_changed()
+    client.schema_type = "TEXT"
+
+    assert await cache._catalog_identity_changed()
+    assert cache._detected_change is not None
+    assert cache._detected_change.startswith("schema:")
+
+
+@pytest.mark.asyncio
+async def test_cache_detects_a_direct_lineage_change() -> None:
+    client = MutableCacheClient()
+    settings = Settings(
+        app_env="test", database_url="sqlite:///:memory:", datahub_gms_url="http://localhost:8080",
+        datahub_gms_token=None, catalog_autoload=False, catalog_max_assets=20,
+        catalog_max_edges=20, catalog_change_probe_assets=1,
+    )
+    cache = CatalogCache(settings, client_factory=lambda: client)  # type: ignore[arg-type]
+    await cache._refresh("initial")
+    client.lineage_target = "urn:li:dataset:(urn:li:dataPlatform:tableau,shop.new_dashboard,PROD)"
+
+    assert await cache._catalog_identity_changed()
+    assert cache._detected_change is not None
+    assert cache._detected_change.startswith("lineage:")
+
+
+@pytest.mark.asyncio
+async def test_refresh_watchdog_preserves_graph_and_reports_failure() -> None:
+    client = MutableCacheClient()
+    settings = Settings(
+        app_env="test", database_url="sqlite:///:memory:", datahub_gms_url="http://localhost:8080",
+        datahub_gms_token=None, catalog_autoload=False, catalog_max_assets=20,
+        catalog_max_edges=20, catalog_refresh_timeout_seconds=0.03,  # type: ignore[arg-type]
+    )
+    cache = CatalogCache(settings, client_factory=lambda: client)  # type: ignore[arg-type]
+    await cache._refresh("initial")
+    original = await cache.snapshot()
+    client.hang_search = True
+
+    await cache._guarded_refresh("stuck_refresh")
+    recovered = await cache.snapshot()
+
+    assert recovered.status.state == "STALE"
+    assert recovered.status.refresh_in_progress is False
+    assert recovered.status.consecutive_failures == 1
+    assert "watchdog" in (recovered.status.last_error or "")
+    assert recovered.graph == original.graph
+
+
+@pytest.mark.asyncio
+async def test_incomplete_lineage_refresh_never_replaces_a_good_graph() -> None:
+    client = MutableCacheClient()
+    settings = Settings(
+        app_env="test", database_url="sqlite:///:memory:", datahub_gms_url="http://localhost:8080",
+        datahub_gms_token=None, catalog_autoload=False, catalog_max_assets=20,
+        catalog_max_edges=20,
+    )
+    cache = CatalogCache(settings, client_factory=lambda: client)  # type: ignore[arg-type]
+    await cache._refresh("initial")
+    original = await cache.snapshot()
+    client.fail_lineage = True
+
+    await cache._guarded_refresh("partial_failure")
+    failed = await cache.snapshot()
+
+    assert failed.status.state == "STALE"
+    assert failed.status.consecutive_failures == 1
+    assert failed.graph == original.graph
+
+
+@pytest.mark.asyncio
+async def test_guarded_refresh_recovers_after_an_unexpected_provider_error() -> None:
+    client = MutableCacheClient()
+    settings = Settings(
+        app_env="test", database_url="sqlite:///:memory:", datahub_gms_url="http://localhost:8080",
+        datahub_gms_token=None, catalog_autoload=False, catalog_max_assets=20,
+        catalog_max_edges=20,
+    )
+    cache = CatalogCache(settings, client_factory=lambda: client)  # type: ignore[arg-type]
+    client.fail_lineage = True
+    await cache._guarded_refresh("first_attempt")
+    # Root assets were published before lineage failed, so the usable partial
+    # startup view is marked STALE rather than discarded as FAILED.
+    assert (await cache.snapshot()).status.state == "STALE"
+
+    client.fail_lineage = False
+    await cache._guarded_refresh("automatic_retry")
+    snapshot = await cache.snapshot()
+
+    assert snapshot.status.state == "READY"
+    assert snapshot.status.consecutive_failures == 0
+    assert snapshot.status.generation == 1
+
+
+@pytest.mark.asyncio
+async def test_background_worker_automatically_retries_after_watchdog_timeout() -> None:
+    client = RecoveringCacheClient()
+    settings = Settings(
+        app_env="test", database_url="sqlite:///:memory:", datahub_gms_url="http://localhost:8080",
+        datahub_gms_token=None, catalog_autoload=False, catalog_max_assets=20,
+        catalog_max_edges=20, catalog_refresh_seconds=0.03,  # type: ignore[arg-type]
+        catalog_refresh_timeout_seconds=0.02,  # type: ignore[arg-type]
+    )
+    cache = CatalogCache(settings, client_factory=lambda: client)  # type: ignore[arg-type]
+
+    await cache._start_worker("watchdog_test")
+    deadline = asyncio.get_running_loop().time() + 0.5
+    while (await cache.snapshot()).status.generation < 1:
+        if asyncio.get_running_loop().time() >= deadline:
+            pytest.fail("catalog worker did not recover before the test deadline")
+        await asyncio.sleep(0.01)
+    snapshot = await cache.snapshot()
+    await cache.stop()
+
+    assert client.search_attempts >= 2
+    assert snapshot.status.state == "READY"
+    assert snapshot.status.consecutive_failures == 0
+    assert snapshot.status.generation == 1
+
+
+@pytest.mark.asyncio
+async def test_unchanged_polls_never_start_another_full_refresh() -> None:
+    settings = Settings(
+        app_env="test", database_url="sqlite:///:memory:", datahub_gms_url="http://localhost:8080",
+        datahub_gms_token=None, catalog_autoload=False, catalog_max_assets=20,
+        catalog_max_edges=20, catalog_refresh_seconds=0.02,  # type: ignore[arg-type]
+        catalog_refresh_timeout_seconds=0.5,  # type: ignore[arg-type]
+        catalog_change_probe_assets=1,
+    )
+    cache = CatalogCache(settings, client_factory=CacheClient)  # type: ignore[arg-type]
+
+    await cache._start_worker("unchanged_poll_test")
+    deadline = asyncio.get_running_loop().time() + 0.5
+    while (await cache.snapshot()).status.generation < 1:
+        if asyncio.get_running_loop().time() >= deadline:
+            pytest.fail("initial catalog generation did not complete")
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.12)
+    snapshot = await cache.snapshot()
+    await cache.stop()
+
+    assert snapshot.status.generation == 1
+    assert snapshot.status.refresh_in_progress is False
+    assert snapshot.status.last_checked_at is not None

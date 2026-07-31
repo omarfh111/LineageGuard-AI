@@ -46,6 +46,9 @@ class Settings:
     catalog_max_assets: int = 1500
     catalog_max_edges: int = 5000
     catalog_lineage_concurrency: int = 8
+    datahub_mcp_timeout_seconds: int = 45
+    catalog_refresh_timeout_seconds: int = 600
+    catalog_change_probe_assets: int = 25
     chat_memory_enabled: bool = True
     chat_memory_max_turns: int = 6
     chat_memory_context_chars: int = 6000
@@ -94,7 +97,18 @@ def get_settings() -> Settings:
         catalog_refresh_seconds=max(15, int(os.getenv("CATALOG_REFRESH_SECONDS", "60"))),
         catalog_max_assets=max(1, int(os.getenv("CATALOG_MAX_ASSETS", "1500"))),
         catalog_max_edges=max(1, int(os.getenv("CATALOG_MAX_EDGES", "5000"))),
-        catalog_lineage_concurrency=max(1, int(os.getenv("CATALOG_LINEAGE_CONCURRENCY", "8"))),
+        catalog_lineage_concurrency=max(
+            1, min(32, int(os.getenv("CATALOG_LINEAGE_CONCURRENCY", "8")))
+        ),
+        datahub_mcp_timeout_seconds=max(
+            5, min(120, int(os.getenv("DATAHUB_MCP_TIMEOUT_SECONDS", "45")))
+        ),
+        catalog_refresh_timeout_seconds=max(
+            30, min(3600, int(os.getenv("CATALOG_REFRESH_TIMEOUT_SECONDS", "600")))
+        ),
+        catalog_change_probe_assets=max(
+            1, min(100, int(os.getenv("CATALOG_CHANGE_PROBE_ASSETS", "25")))
+        ),
         chat_memory_enabled=_enabled(os.getenv("CHAT_MEMORY_ENABLED", "true")),
         chat_memory_max_turns=max(1, min(20, int(os.getenv("CHAT_MEMORY_MAX_TURNS", "6")))),
         chat_memory_context_chars=max(1000, min(20000, int(os.getenv("CHAT_MEMORY_CONTEXT_CHARS", "6000")))),

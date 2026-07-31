@@ -171,7 +171,13 @@ The health endpoint reports configuration, not a guarantee that a paid provider 
 The API starts loading the catalog when the **backend process starts**, before a browser is opened. The root catalog becomes `READY` as soon as all bounded assets are available; lineage relationships continue to enrich in the background. The graph stays visible during a refresh and is replaced atomically only after a successful refreshed graph is ready.
 
 - The browser polls the server-owned cache; it never initiates the full traversal.
-- A scheduled poll compares stable root **URNs** only. It requires two identical changed observations before it starts another full lineage scan, preventing display/ranking fluctuations from causing repeated work.
+- A scheduled poll compares stable root URNs and catalog metadata, then inspects
+  a rotating bounded slice of exact assets for schema and direct-lineage
+  changes. Root changes require two identical observations; exact MCP probes
+  are not inferred from search ranking.
+- Every MCP session has a hard deadline. A separate refresh watchdog cancels
+  stuck traversal, preserves the last good graph, reports the failure, and
+  retries without restarting the backend.
 - `READY` means the catalog is usable. The status message tells you when relationship enrichment is still in progress.
 - Filtering and text search are client-side filters over the complete loaded graph. Selecting `All` restores every cached node.
 - “Load 50 more assets” appears only if the server graph reached `CATALOG_MAX_ASSETS`; with a complete 1,188-asset showcase cache, no extra button is expected.
@@ -219,6 +225,9 @@ CATALOG_REFRESH_SECONDS=60
 CATALOG_MAX_ASSETS=1500
 CATALOG_MAX_EDGES=5000
 CATALOG_LINEAGE_CONCURRENCY=8
+DATAHUB_MCP_TIMEOUT_SECONDS=45
+CATALOG_REFRESH_TIMEOUT_SECONDS=600
+CATALOG_CHANGE_PROBE_ASSETS=25
 
 CHAT_MEMORY_ENABLED=true
 CHAT_MEMORY_MAX_TURNS=6
@@ -259,7 +268,15 @@ public agent trace records the exact fallback path.
 `CATALOG_LINEAGE_CONCURRENCY` is enforced inside the shared MCP session as
 well as in fallback traversal. This prevents the 3D background enrichment from
 starting an unbounded batch of DataHub GraphQL reads and starving interactive
-chat-to-analysis requests.
+chat-to-analysis requests. Calls are created in chunks rather than as an
+unbounded queue of waiting tasks.
+
+`DATAHUB_MCP_TIMEOUT_SECONDS` covers MCP process startup, initialization, tool
+calls, and teardown. `CATALOG_REFRESH_TIMEOUT_SECONDS` is the independent
+whole-refresh watchdog. `CATALOG_CHANGE_PROBE_ASSETS` controls eventual
+schema/lineage detection latency: each poll advances through that many assets,
+while keeping the polling load bounded. Cache status exposes generation,
+refresh/check timestamps, failure count, last error, and detected change.
 
 ### No-key demonstration mode
 
