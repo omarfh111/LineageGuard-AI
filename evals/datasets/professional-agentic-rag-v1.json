@@ -1,5 +1,7 @@
 {
   "dataset_id": "lineageguard-professional-agentic-rag-v1",
+  "dataset_version": "1.1.0",
+  "evidence_schema_version": "1.0.0",
   "dataset_type": "rag",
   "reviewed_at": "2026-07-31",
   "reviewed_environment": "DataHub showcase-ecommerce local datapack",

@@ -8,6 +8,7 @@ reported only when the API returns safe token telemetry.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import time
 from datetime import UTC, datetime
@@ -17,6 +18,19 @@ from statistics import mean, median
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+
+
+def _evidence_writer():
+    """Load the sibling helper both as a script and via importlib test harnesses."""
+
+    path = Path(__file__).with_name("evidence_manifest.py")
+    spec = importlib.util.spec_from_file_location("lineageguard_evidence_manifest", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the evaluation evidence writer")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.write_evidence
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CASES = ROOT / "evals" / "datasets" / "professional-agentic-rag-v1.json"
@@ -91,6 +105,18 @@ def post_json(url: str, body: dict[str, Any], timeout_seconds: float) -> dict[st
     )
     with urlopen(request, timeout=timeout_seconds) as response:  # nosec B310 - explicit local URL from CLI
         return json.loads(response.read().decode("utf-8"))
+
+
+def safe_health(api_base_url: str, timeout_seconds: float) -> dict[str, Any]:
+    """Capture only public readiness fields; credentials never enter evidence."""
+
+    allowed = {"status", "environment", "datahub", "llm_providers", "qdrant", "writeback", "demo_mode"}
+    try:
+        with urlopen(f"{api_base_url.rstrip('/')}/api/v1/health", timeout=timeout_seconds) as response:  # nosec B310 - explicit local URL from CLI
+            payload = json.loads(response.read().decode("utf-8"))
+        return {key: payload.get(key) for key in sorted(allowed)}
+    except (HTTPError, URLError, TimeoutError, ValueError):
+        return {"status": "unavailable"}
 
 
 def run(api_base_url: str, cases_path: Path, timeout_seconds: float, k: int) -> dict[str, Any]:
@@ -228,6 +254,7 @@ if __name__ == "__main__":
     parser.add_argument("--k", type=int, default=6)
     parser.add_argument("--case-id", action="append", help="run only one or more named cases")
     parser.add_argument("--output", type=Path, help="optional untracked JSON result path")
+    parser.add_argument("--evidence-dir", type=Path, help="write an immutable versioned evidence envelope")
     args = parser.parse_args()
     if args.case_id:
         source = json.loads(args.cases.read_text(encoding="utf-8"))
@@ -246,5 +273,21 @@ if __name__ == "__main__":
         result = run(args.api_base_url, args.cases, args.timeout_seconds, args.k)
     rendered = json.dumps(result, indent=2)
     if args.output:
-        args.output.write_text(rendered + "\n", encoding="utf-8")
+        with args.output.open("x", encoding="utf-8") as stream:
+            stream.write(rendered + "\n")
+    if args.evidence_dir:
+        evidence_path = _evidence_writer()(
+            result,
+            args.cases,
+            "live-agentic-rag-v2",
+            args.evidence_dir,
+            runtime={
+                "mode": "live_read_only",
+                "api_base_url": args.api_base_url,
+                "health": safe_health(args.api_base_url, min(args.timeout_seconds, 5)),
+                "selected_case_ids": sorted(args.case_id or []),
+                "top_k": args.k,
+            },
+        )
+        print(f"Evidence: {evidence_path.relative_to(ROOT)}")
     print(rendered)

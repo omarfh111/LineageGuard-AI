@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -38,6 +39,20 @@ def graph_definition() -> WorkflowVisualization:
     """Return the safe, static topology for the dynamic graph UI."""
 
     return LineageGuardWorkflow().visualization()
+
+
+@router.get("/analysis/{analysis_run_id}", response_model=WorkflowAnalysisExecution)
+def restore_analysis(analysis_run_id: UUID) -> WorkflowAnalysisExecution:
+    """Restore a server-owned read-only analysis after a browser reload.
+
+    The endpoint never restores judge results, reviewer capabilities, approval
+    state, or idempotency keys.  Those authorities must be earned again.
+    """
+
+    execution = LineageGuardWorkflow().restore_analysis(str(analysis_run_id))
+    if execution is None:
+        raise HTTPException(404, "Unknown server-owned analysis run")
+    return execution
 
 
 @router.post("/analyze", response_model=WorkflowAnalysisExecution)

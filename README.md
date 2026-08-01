@@ -29,6 +29,9 @@ The application never changes a warehouse schema, dbt model, lineage edge, dashb
   in local SQLite; Qdrant persists a safe metadata-only retrieval index.
 - Persists each deterministic analysis as a server-owned snapshot; final judges
   receive an `analysis_run_id`, never a browser-submitted replacement report.
+- Restores an interrupted read-only analysis after a browser reload from that
+  immutable server snapshot. Only the opaque run UUID is kept in session storage;
+  judge results, reviewer capability, approval state, and idempotency keys are reset.
 
 ## Architecture
 
@@ -334,12 +337,23 @@ python -m pytest tests -q -p no:cacheprovider
 Set-Location ..\frontend
 npm run check
 
+# Deterministic Chromium E2E: cache recovery, workflow reload, tamper rejection
+npx playwright install chromium
+npm run test:e2e
+
+# Opt-in test against the actual local Docker/DataHub stack
+$env:LINEAGEGUARD_LIVE_E2E="1"
+npm run test:e2e:live
+
 # Offline, no-cost RAG/MCP regression metrics
 Set-Location ..
 python .\evals\runners\run_agentic_rag_evals.py
 
-# Live, read-only 30-query professional benchmark
-python .\evals\runners\run_live_agentic_evals.py --timeout-seconds 85
+# Immutable offline evidence with dataset/source hashes
+python .\evals\runners\run_deterministic_evals.py --evidence-dir evals/evidence
+
+# Live, read-only 30-query professional evidence
+python .\evals\runners\run_live_agentic_evals.py --timeout-seconds 90 --evidence-dir evals/evidence
 
 # Analyze and run both judges without permitting a mutation
 python .\evals\runners\run_live_governed_writeback.py
@@ -347,15 +361,23 @@ python .\evals\runners\run_live_governed_writeback.py
 
 The latest committed offline baseline measures retrieval identity, schema and lineage facts, tool selection, citation coverage, verifier blocking, latency, and cost without a provider call. Runtime verification audits every extracted factual claim and exposes claim count, supported count, coverage, evidence IDs, and a public support reason. The live runner adds claim-support coverage, unsupported-claim escape rate, and fully-supported verified-answer rate.
 
-The isolated professional run on 2026-07-31 completed all 30 reviewed cases;
-22 cases have exact ranking labels. It measured `Precision@6=0.992`,
-`Recall@6=1.000`, `MRR@6=1.000`, `NDCG@6=1.000`, router/tool/verification/
+Every new evidence JSON is created exclusively under `evals/evidence/`; an
+existing result cannot be overwritten. Its manifest records the evidence schema,
+dataset ID/version/SHA-256, evaluator version, relevant source SHA-256, Git
+revision, tracked-patch SHA-256, timestamp, selected cases, and secret-free health
+summary. This makes results comparable without implying that a dirty local run
+is identical to a tagged release.
+
+The versioned professional run on 2026-08-01 completed all 30 reviewed cases;
+22 cases have exact ranking labels. It measured `Precision@6=0.902`,
+`Recall@6=0.909`, `MRR@6=0.909`, `NDCG@6=0.909`, router/tool/verification/
 target accuracy of `1.000`, zero unsupported-claim escape, p95 latency of
-`9,869.4 ms`, 4,733 measured tokens, and estimated OpenAI cost of
-`USD 0.0040112`. The separate governed proof completed analysis, deterministic
+`9,516.9 ms`, 4,693 measured tokens, and estimated OpenAI cost of
+`USD 0.0039472`. It also includes three deterministic Chromium E2E scenarios
+and one opt-in live DataHub browser scenario. The separate governed proof completed analysis, deterministic
 validation, two independent PASS verdicts, explicit HITL approval, one DataHub
 Analysis-document write, and compensation to `ROLLED_BACK`. See the
-[reviewed validation report](evals/reports/professional-validation-2026-07-31.md)
+[versioned professional validation report](evals/reports/p0-professional-validation-2026-08-01.md)
 for methodology, exact boundaries, and audit evidence.
 
 The 2026-08-01 P0 correctness run additionally proves live Qdrant-guided MCP

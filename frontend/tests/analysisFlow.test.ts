@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildChangeRequest,
   createChatHandoff,
+  draftFromRequest,
   hasRevisionChange,
   isHandoffUsable,
   requestFingerprint,
@@ -63,6 +64,18 @@ describe("analysis request construction", () => {
     const first = buildChangeRequest(base);
     const second = buildChangeRequest({ ...base, reason: "A revised reason." });
     expect(requestFingerprint(first)).not.toBe(requestFingerprint(second));
+  });
+
+  it("canonicalizes server null optionals before reload comparison", () => {
+    const serverRequest = {
+      ...buildChangeRequest(base),
+      new_value: null,
+      type_change_compatible: null,
+    } as unknown as Parameters<typeof requestFingerprint>[0];
+    const restored = draftFromRequest(serverRequest);
+    expect(requestFingerprint(buildChangeRequest(restored))).toBe(
+      requestFingerprint(buildChangeRequest(base)),
+    );
   });
 
   it("blocks an unchanged revision and accepts a changed request", () => {

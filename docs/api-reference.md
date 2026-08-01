@@ -34,10 +34,15 @@ of an impact report.
 |---|---|---|
 | `GET` | `/api/v1/workflows/graph` | Public workflow visualization and tracing state |
 | `POST` | `/api/v1/workflows/analyze` | Build impact report and deterministic plan |
+| `GET` | `/api/v1/workflows/analysis/{analysis_run_id}` | Restore an immutable server-owned read-only analysis after browser reload |
 | `POST` | `/api/v1/workflows/critique` | Optional NVIDIA advisory critique |
 | `POST` | `/api/v1/workflows/judge` | Reload a server-owned analysis, run Gate 0, then independent OpenAI/Groq review |
 | `POST` | `/api/v1/judges/evaluate` | Lower-level equivalent using the same server-owned analysis reference |
 | `GET` | `/api/v1/judges/history` | Persisted non-secret judging summaries |
+
+The restore route accepts a UUID only. It returns the original report and plan
+from SQLite but never judge results, reviewer capability, HITL state, or an
+idempotency key. An unknown UUID returns `404`; a malformed value returns `422`.
 
 Example request body:
 

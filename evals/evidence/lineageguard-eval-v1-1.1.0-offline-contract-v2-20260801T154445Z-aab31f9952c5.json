@@ -1,0 +1,95 @@
+{
+  "evidence_manifest": {
+    "dataset": {
+      "id": "lineageguard-eval-v1",
+      "path": "evals/datasets/lineageguard-eval-v1.json",
+      "sha256": "dbfa2e653efa6263f7ede406a3f4768d4109e9ba00aea2e99248fcea8f84801d",
+      "version": "1.1.0"
+    },
+    "evaluator": "offline-contract-v2",
+    "generated_at": "2026-08-01T15:44:45.750154+00:00",
+    "runtime": {
+      "mode": "offline_no_provider_calls"
+    },
+    "schema_version": "1.0.0",
+    "source": {
+      "files": [
+        "backend/app/__init__.py",
+        "backend/app/api/__init__.py",
+        "backend/app/api/v1/__init__.py",
+        "backend/app/api/v1/analysis.py",
+        "backend/app/api/v1/chat.py",
+        "backend/app/api/v1/datahub.py",
+        "backend/app/api/v1/debate.py",
+        "backend/app/api/v1/health.py",
+        "backend/app/api/v1/judging.py",
+        "backend/app/api/v1/remediation.py",
+        "backend/app/api/v1/workflow.py",
+        "backend/app/api/v1/writeback.py",
+        "backend/app/core/__init__.py",
+        "backend/app/core/config.py",
+        "backend/app/datahub/__init__.py",
+        "backend/app/datahub/mcp_client.py",
+        "backend/app/domain/__init__.py",
+        "backend/app/domain/contracts.py",
+        "backend/app/main.py",
+        "backend/app/services/__init__.py",
+        "backend/app/services/catalog_cache.py",
+        "backend/app/services/catalog_graph.py",
+        "backend/app/services/chat_agent.py",
+        "backend/app/services/chat_handoff.py",
+        "backend/app/services/chat_memory.py",
+        "backend/app/services/impact_analysis.py",
+        "backend/app/services/judging.py",
+        "backend/app/services/metadata_investigator.py",
+        "backend/app/services/nvidia_critic.py",
+        "backend/app/services/rag_index.py",
+        "backend/app/services/remediation_planner.py",
+        "backend/app/services/request_interpreter.py",
+        "backend/app/services/run_store.py",
+        "backend/app/services/workflow_graph.py",
+        "backend/app/services/writeback.py",
+        "evals/datasets/lineageguard-eval-v1.json",
+        "evals/runners/evidence_manifest.py",
+        "evals/runners/run_agentic_rag_evals.py",
+        "evals/runners/run_deterministic_evals.py",
+        "evals/runners/run_live_agentic_evals.py",
+        "evals/runners/run_live_governed_writeback.py",
+        "frontend/src/analysisFlow.ts",
+        "frontend/src/App.tsx",
+        "frontend/src/recovery.ts"
+      ],
+      "git_dirty": true,
+      "git_revision": "db2372ac0197931797b4de4ce8502ff2a752d7ca",
+      "sha256": "aab31f9952c5a6bb1e1f2ee3e063bf1f2a2d7045687ca54f7ba0469393666884",
+      "tracked_patch_sha256": "42fa411756466414ac830ec354502f0ec8d214281c2db1e13e7db1d05d1e3fcb"
+    }
+  },
+  "results": {
+    "case_count": 20,
+    "tags": [
+      "asset_absent",
+      "column_absent",
+      "compatibility_unproven",
+      "cross_platform",
+      "destructive",
+      "incompatible_type",
+      "judge_disagreement",
+      "lineage_complete",
+      "multi_hop",
+      "no_lineage",
+      "owners_missing",
+      "platform_missing",
+      "prompt_injection",
+      "provider_timeout",
+      "required_column",
+      "writeback_failure"
+    ],
+    "types": {
+      "ADD_COLUMN": 5,
+      "CHANGE_COLUMN_TYPE": 5,
+      "DROP_COLUMN": 5,
+      "RENAME_COLUMN": 5
+    }
+  }
+}

@@ -26,6 +26,8 @@ backend/.tmp-bootstrap/
 node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/playwright-report/
+frontend/test-results/
 
 # Editors and operating systems
 .DS_Store

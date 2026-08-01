@@ -50,11 +50,24 @@ def test_analysis_snapshot_is_server_owned_and_survives_store_recreation() -> No
         request.impact_report.risk_assessment.score = 0
         restored = AnalysisStore(database_url).get(run_id)
 
+        restored_snapshot = AnalysisStore(database_url).restore(run_id)
+
         assert restored is not None
+        assert restored_snapshot is not None
         assert restored.impact_report.risk_assessment.score == 45
+        assert restored_snapshot[0].risk_assessment.score == 45
         assert (
             restored.remediation_plan.source_asset_urn
             == request.impact_report.request.asset_urn
         )
+    finally:
+        database_path.unlink(missing_ok=True)
+
+
+def test_unknown_analysis_snapshot_cannot_be_restored() -> None:
+    database_path = Path(__file__).with_name(".analysis-store-missing-test.db")
+    database_path.unlink(missing_ok=True)
+    try:
+        assert AnalysisStore(f"sqlite:///{database_path}").restore("missing") is None
     finally:
         database_path.unlink(missing_ok=True)

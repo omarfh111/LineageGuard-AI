@@ -4,9 +4,23 @@ from __future__ import annotations
 
 import json
 import argparse
+import importlib.util
 from collections import Counter
 from datetime import date
 from pathlib import Path
+
+
+
+def _evidence_writer():
+    """Load the sibling helper both as a script and via importlib test harnesses."""
+
+    path = Path(__file__).with_name("evidence_manifest.py")
+    spec = importlib.util.spec_from_file_location("lineageguard_evidence_manifest", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the evaluation evidence writer")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.write_evidence
 
 ROOT = Path(__file__).resolve().parents[2]
 DATASET = ROOT / "evals" / "datasets" / "lineageguard-eval-v1.json"
@@ -105,6 +119,7 @@ All 20 reference cases are structurally valid and cover: complete/no lineage, in
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--write-report", action="store_true", help="write the tracked baseline report")
+    parser.add_argument("--evidence-dir", type=Path, help="write an immutable versioned evidence envelope")
     args = parser.parse_args()
     result = evaluate()
     if args.write_report:
@@ -112,3 +127,12 @@ if __name__ == "__main__":
         print(f"Wrote {REPORT.relative_to(ROOT)}")
     else:
         print(json.dumps({"case_count": result["case_count"], "types": result["types"]}, default=dict, indent=2))
+    if args.evidence_dir:
+        evidence_path = _evidence_writer()(
+            {"case_count": result["case_count"], "types": dict(result["types"]), "tags": sorted(result["tags"])},
+            DATASET,
+            "offline-contract-v2",
+            args.evidence_dir,
+            runtime={"mode": "offline_no_provider_calls"},
+        )
+        print(f"Evidence: {evidence_path.relative_to(ROOT)}")

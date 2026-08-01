@@ -82,6 +82,9 @@ The latest reviewed result is
 | FLOW-08 | Rename collision | Rename a field to an existing field and then to the same name with different case. | Both requests fail before report creation. |
 | FLOW-09 | Type identity | Submit a type change equal to the current type with different case/spacing, then omit current type from a disposable fixture. | Both requests fail closed; caller compatibility cannot create a compatibility conclusion. |
 | FLOW-10 | Multi-hop proof | Analyze a fixture with a two-hop descendant and tamper with its intermediate URN before Gate 0. | Report contains the exact MCP path; Gate 0 accepts the original and rejects the tampered path. |
+| FLOW-11 | Browser reload recovery | Complete a read-only analysis, reload the tab, then inspect storage and restored UI. | The report/plan return from the server-owned UUID; only that UUID exists in session storage; judge/HITL authority is absent. |
+| FLOW-12 | Reload pointer tampering | Put a malformed or unknown analysis ID in session storage and reload. | Malformed IDs are removed without a restore call; unknown UUIDs return `404`, are removed, and no stale report appears. |
+| E2E-01 | Automated Chromium suite | Run `npm run test:e2e` from `frontend`. | Cache recovery, workflow reload, and tamper rejection pass with traces/screenshots retained on failure. |
 | JUDGE-01 | Independent review | Run NVIDIA then OpenAI/Groq with consent. | Provider/model/verdict visible independently; aggregate follows Gate 0 policy. |
 | HITL-01 | Rejection | Prepare an eligible proposal then reject/revise it. | Audit persists; no document is written. |
 | HITL-02 | Idempotency | Repeat an approval API request with same idempotency key in disposable proof. | At most one document action is recorded. |

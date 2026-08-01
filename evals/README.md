@@ -54,6 +54,25 @@ Run the read-only suite against a healthy API:
 python .\evals\runners\run_live_agentic_evals.py --timeout-seconds 85
 ```
 
+For submission-grade evidence, always use an immutable output envelope:
+
+```powershell
+python .\evals\runners\run_live_agentic_evals.py --timeout-seconds 90 --evidence-dir evals/evidence
+```
+
+The envelope includes the dataset semantic version and SHA-256, evaluator
+version, relevant source-tree SHA-256, Git revision, tracked-patch SHA-256,
+timestamp, selected-case list, and a secret-free health summary. Writers use
+exclusive creation and therefore never silently overwrite prior evidence. See
+[`evidence/README.md`](evidence/README.md) for the contract.
+
+Browser acceptance is a separate evidence layer. `npm run test:e2e` runs
+Chromium scenarios for non-blanking cache recovery, immutable workflow reload,
+and tampered reload-pointer rejection. API fixtures are deterministic for CI;
+the same read-only flows are then repeated against the local DataHub stack with
+`LINEAGEGUARD_LIVE_E2E=1 npm run test:e2e:live` (PowerShell: assign the
+environment variable first). The live scenario performs reads and analysis only.
+
 The current reviewed result is
 [`reports/professional-validation-2026-07-31.md`](reports/professional-validation-2026-07-31.md):
 30/30 completed, `Precision@6=0.992`, `Recall@6=1.000`, `MRR@6=1.000`,

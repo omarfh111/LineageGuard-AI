@@ -157,6 +157,19 @@ class AnalysisStore:
             repair_cycles=repair_cycles,
         )
 
+    def restore(self, run_id: str) -> tuple[ImpactReport, RemediationPlan] | None:
+        """Return the immutable analysis snapshot without granting judge authority.
+
+        Browser reloads only carry an opaque run identifier.  The report and plan
+        are always reloaded from the server-owned SQLite row so client-side data
+        can never become the source of truth.
+        """
+
+        request = self.get(run_id)
+        if request is None:
+            return None
+        return request.impact_report, request.remediation_plan
+
 
 run_store = RunStore()
 analysis_store = AnalysisStore()

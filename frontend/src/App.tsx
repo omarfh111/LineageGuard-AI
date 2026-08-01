@@ -14,6 +14,12 @@ import {
   type ChangeType,
   type ChatAnalysisHandoff,
 } from "./analysisFlow";
+import {
+  clearAnalysisRun,
+  loadAnalysisRun,
+  recoverCatalogGraph,
+  saveAnalysisRun,
+} from "./recovery";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const demoAsset = "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.orders,PROD)";
@@ -35,6 +41,7 @@ type CatalogEdge = { source_urn: string; target_urn: string; direction: string; 
 type CatalogGraph = { nodes: CatalogNode[]; edges: CatalogEdge[]; truncated: boolean };
 type CatalogCacheStatus = { state: "IDLE" | "RUNNING" | "READY" | "STALE" | "FAILED"; loaded_assets: number; loaded_edges: number; message: string; last_updated_at?: string | null; last_checked_at?: string | null; refresh_reason?: string | null; refresh_in_progress: boolean; consecutive_failures: number; last_error?: string | null; detected_change?: string | null; generation: number };
 type CatalogCacheSnapshot = { status: CatalogCacheStatus; graph: CatalogGraph };
+type WorkflowAnalysisExecution = { analysis_run_id: string; impact_report: ImpactReport; remediation_plan: RemediationPlan; graph: WorkflowGraph };
 type RagStatus = { state: "IDLE" | "RUNNING" | "COMPLETED" | "FAILED"; indexed_assets: number; total_assets: number; message: string; query_available: boolean };
 type ChatMemory = { session_id?: string | null; enabled: boolean; message_count: number; max_turns: number; last_updated_at?: string | null };
 type ChatReply = { answer: string; citations: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null; source: string; score?: number | null }>; verification_note: string; verification?: { passed: boolean; checks: string[]; issues: string[]; factual_claim_count: number; supported_claim_count: number; claim_coverage: number; claims: Array<{ claim_id: string; text: string; evidence_ids: string[]; supported: boolean; reason: string }> } | null; evidence: Array<{ id: string; kind: string; asset_urn: string; summary: string; facts: string[] }>; action_proposal: { action: "NONE" | "ANALYZE_IMPACT" | "HITL_WRITEBACK"; change_type?: ChangeType | null; requires_confirmation: boolean; reason: string; required_fields: string[] }; target_resolution?: { status: "NOT_REQUIRED" | "RESOLVED" | "AMBIGUOUS" | "NOT_FOUND"; detail: string; targets: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null }> } | null; active_verified_asset?: { urn: string; label: string; entity_type: string; platform_urn?: string | null } | null; analysis_handoff_id?: string | null; analysis_handoff_expires_at?: string | null; agent_trace: Array<{ id: string; label: string; status: string; detail: string }>; memory?: ChatMemory | null; model_usage?: { model?: string | null; input_tokens: number; output_tokens: number; total_tokens: number; estimated_cost_usd?: number | null } | null };
@@ -134,7 +141,18 @@ export default function App() {
   useEffect(() => {
     request<Health>("/api/v1/health").then(setHealth).catch(() => setHealth(null));
     request<RunSummary[]>("/api/v1/judges/history").then(setHistory).catch(() => setHistory([]));
-    request<WorkflowGraph>("/api/v1/workflows/graph").then(setWorkflowGraph).catch(() => setWorkflowGraph(null));
+    const storedRunId = loadAnalysisRun(window.sessionStorage);
+    if (storedRunId) {
+      request<WorkflowAnalysisExecution>(`/api/v1/workflows/analysis/${storedRunId}`)
+        .then((execution) => restoreAnalysisExecution(execution))
+        .catch(() => {
+          clearAnalysisRun(window.sessionStorage);
+          request<WorkflowGraph>("/api/v1/workflows/graph").then(setWorkflowGraph).catch(() => setWorkflowGraph(null));
+          setNotice("The saved analysis no longer exists on the server; no stale report was restored.");
+        });
+    } else {
+      request<WorkflowGraph>("/api/v1/workflows/graph").then(setWorkflowGraph).catch(() => setWorkflowGraph(null));
+    }
     request<RagStatus>("/api/v1/chat/index/status").then(setRagStatus).catch(() => setRagStatus(null));
     request<ChatMemory>(`/api/v1/chat/memory/${chatSessionId}`).then(setChatMemory).catch(() => setChatMemory(null));
     request<CatalogCacheSnapshot>("/api/v1/datahub/catalog/cache").then(applyCatalogCache).catch(() => setCatalogCache(null));
@@ -177,6 +195,7 @@ export default function App() {
       setImpact(null);
       setPlan(null);
       setAnalysisRunId(null);
+      clearAnalysisRun(window.sessionStorage);
       setCritique(null);
       setJudging(null);
       setProposal(null);
@@ -199,6 +218,32 @@ export default function App() {
   }, [catalogGraph, catalogTypeFilter, catalogPlatformFilter, catalogSearchTerm]);
 
   function resetAfterImpact() { setAnalysisRunId(null); setCritique(null); setJudging(null); setProposal(null); setWritebackKey(null); setDecisionComment(""); }
+  function restoreAnalysisExecution(execution: WorkflowAnalysisExecution) {
+    const reviewedRequest = execution.impact_report.request as ChangeRequestPayload | undefined;
+    if (!reviewedRequest) throw new Error("Stored analysis is missing its request");
+    const restored = draftFromRequest(reviewedRequest);
+    const canonicalRequest = buildChangeRequest(restored);
+    setAssetUrn(restored.assetUrn);
+    setChangeType(restored.changeType);
+    setColumnName(restored.columnName);
+    setNewValue(restored.newValue);
+    setReason(restored.reason);
+    setDepth(restored.depth);
+    setColumnNullable(restored.columnNullable);
+    setTypeChangeCompatible(restored.typeChangeCompatible);
+    setImpact(execution.impact_report);
+    setPlan(execution.remediation_plan);
+    setAnalysisRunId(execution.analysis_run_id);
+    setWorkflowGraph(execution.graph);
+    setAnalysisFingerprint(requestFingerprint(canonicalRequest));
+    setCritique(null);
+    setJudging(null);
+    setProposal(null);
+    setWritebackKey(null);
+    setRevisionBaseline(null);
+    setRevisionComment(null);
+    setNotice("Read-only analysis restored from the server. Judge and approval authority were intentionally reset.");
+  }
   function mergeCatalogGraph(next: CatalogGraph) {
     setCatalogGraph((current) => {
       if (!current) return next;
@@ -210,11 +255,18 @@ export default function App() {
     });
   }
   function applyCatalogCache(snapshot: CatalogCacheSnapshot) {
-    setCatalogCache(snapshot.status);
-    setCatalogGraph(snapshot.graph);
-    setCatalogOffset(snapshot.graph.nodes.length);
-    setCatalogHasMore(snapshot.graph.truncated);
-    setSelectedCatalogNode((current) => snapshot.graph.nodes.find((node) => node.urn === current?.urn) ?? snapshot.graph.nodes[0] ?? null);
+    setCatalogGraph((current) => {
+      const graph = recoverCatalogGraph(current, snapshot.graph) as CatalogGraph;
+      setCatalogCache({
+        ...snapshot.status,
+        loaded_assets: graph.nodes.length,
+        loaded_edges: graph.edges.length,
+      });
+      setCatalogOffset(graph.nodes.length);
+      setCatalogHasMore(graph.truncated);
+      setSelectedCatalogNode((selected) => graph.nodes.find((node) => node.urn === selected?.urn) ?? graph.nodes[0] ?? null);
+      return graph;
+    });
   }
   async function refreshHistory() { try { setHistory(await request<RunSummary[]>("/api/v1/judges/history")); } catch { /* non-critical */ } }
   async function runImpact(event: FormEvent) {
@@ -239,14 +291,15 @@ export default function App() {
     setBusy("impact"); setError(null); setNotice(null);
     try {
       const execution = submittedHandoff
-        ? await request<{ analysis_run_id: string; impact_report: ImpactReport; remediation_plan: RemediationPlan; graph: WorkflowGraph }>("/api/v1/chat/execute-analysis", {
+        ? await request<WorkflowAnalysisExecution>("/api/v1/chat/execute-analysis", {
           change_request: submittedPayload,
           confirmed: true,
           handoff_id: submittedHandoff.handoffId,
           session_id: chatSessionId,
         })
-        : await request<{ analysis_run_id: string; impact_report: ImpactReport; remediation_plan: RemediationPlan; graph: WorkflowGraph }>("/api/v1/workflows/analyze", submittedPayload);
+        : await request<WorkflowAnalysisExecution>("/api/v1/workflows/analyze", submittedPayload);
       resetAfterImpact(); setAnalysisRunId(execution.analysis_run_id); setImpact(execution.impact_report); setPlan(execution.remediation_plan); setWorkflowGraph(execution.graph);
+      saveAnalysisRun(window.sessionStorage, execution.analysis_run_id);
       setAnalysisFingerprint(requestFingerprint(submittedPayload));
       setChatHandoff(null);
       setRevisionBaseline(null);
@@ -398,6 +451,7 @@ export default function App() {
         setImpact(null);
         setPlan(null);
         setAnalysisRunId(null);
+        clearAnalysisRun(window.sessionStorage);
         setCritique(null);
         setJudging(null);
         setProposal(null);
@@ -495,7 +549,7 @@ export default function App() {
       </section>
       <aside className="panel workflow"><p className="kicker">Contrôles</p><h2>Workflow gouverné</h2><div className="control"><span>DataHub MCP</span><b className="chip good">lecture seule</b></div><div className="control"><span>NVIDIA Build</span><b className="chip">consultatif</b></div><div className="control"><span>OpenAI + Groq</span><b className="chip warn">manuel</b></div><div className="control"><span>Write-back</span><b className="chip bad">HITL obligatoire</b></div></aside>
     </div>
-    {impact && <section className="panel report"><div className="panel-heading"><div><p className="kicker">Étapes 2–3</p><h2>Rapport d’impact et plan</h2></div><span className={`badge ${statusTone(impact.risk_assessment.level)}`}>{impact.risk_assessment.level} · {impact.risk_assessment.score}/100</span></div><div className="metrics"><div><b>{impact.blast_radius}</b><span>actifs impactés</span></div><div><b>{impact.evidence_bundle.items.length}</b><span>preuves DataHub</span></div><div><b>{Math.round(impact.confidence * 100)}%</b><span>confiance</span></div></div><LineageDiagram source={impact.request.asset_urn} impacts={impact.impacted_assets} /><div className="split"><div><h3>Actifs et lineage</h3><ul className="asset-list">{impact.impacted_assets.slice(0, 8).map((item: any) => <li key={item.asset_urn}><code>{item.asset_urn}</code><span>{item.impact_type} · {item.criticality}</span></li>)}</ul></div><div><h3>Plan de remédiation</h3><ol>{plan?.migration_steps.map((step: any) => <li key={step.order}><b>{step.action}</b><span>{step.rationale}</span></li>)}</ol></div></div><details className="audit-details"><summary>Justification auditable</summary><ul>{impact.risk_assessment.explanation.map((line: string) => <li key={line}>{line}</li>)}</ul></details></section>}
+    {impact && <section className="panel report" data-testid="analysis-report" data-analysis-run-id={analysisRunId ?? ""}><div className="panel-heading"><div><p className="kicker">Étapes 2–3</p><h2>Rapport d’impact et plan</h2></div><span className={`badge ${statusTone(impact.risk_assessment.level)}`}>{impact.risk_assessment.level} · {impact.risk_assessment.score}/100</span></div><div className="metrics"><div><b>{impact.blast_radius}</b><span>actifs impactés</span></div><div><b>{impact.evidence_bundle.items.length}</b><span>preuves DataHub</span></div><div><b>{Math.round(impact.confidence * 100)}%</b><span>confiance</span></div></div><LineageDiagram source={impact.request.asset_urn} impacts={impact.impacted_assets} /><div className="split"><div><h3>Actifs et lineage</h3><ul className="asset-list">{impact.impacted_assets.slice(0, 8).map((item: any) => <li key={item.asset_urn}><code>{item.asset_urn}</code><span>{item.impact_type} · {item.criticality}</span></li>)}</ul></div><div><h3>Plan de remédiation</h3><ol>{plan?.migration_steps.map((step: any) => <li key={step.order}><b>{step.action}</b><span>{step.rationale}</span></li>)}</ol></div></div><details className="audit-details"><summary>Justification auditable</summary><ul>{impact.risk_assessment.explanation.map((line: string) => <li key={line}>{line}</li>)}</ul></details></section>}
     {plan && <section className="panel action-panel"><div><p className="kicker">Étape 4</p><h2>Critique NVIDIA Build</h2><p>Consultative : aucun changement automatique du plan.</p></div><button className="secondary" onClick={runCritique} disabled={busy !== null}>{busy === "critique" ? "Critique en cours…" : "Lancer la critique NVIDIA"}</button></section>}
     {critique && <section className="panel critique"><div className="panel-heading"><div><p className="kicker">Avis consultatif · {critique.model}</p><h2>Résultat NVIDIA</h2></div><span className="badge neutral">confiance {Math.round(critique.confidence * 100)}%</span></div><p>{critique.summary}</p>{critique.issues.map((issue, index) => <article className="issue" key={`${issue.finding}-${index}`}><b>{issue.severity}</b><p>{issue.finding}</p></article>)}</section>}
     {plan && <section className="panel action-panel"><div><p className="kicker">Étape 5 · action externe</p><h2>Revue finale indépendante</h2><p>OpenAI et Groq reçoivent le dossier conservé par le serveur sans voir le verdict de l’autre.</p></div><button className="primary" onClick={runJudges} disabled={busy !== null || !analysisRunId}>{busy === "judges" ? "Juges en cours…" : "Lancer OpenAI + Groq"}</button></section>}
@@ -523,7 +577,7 @@ export default function App() {
 
 function CatalogExplorer({ query, onQuery, onSearch, onSnapshot, onLoadMore, hasMore, busy, types, platforms, typeFilter, platformFilter, onType, onPlatform, graph, nodes, selected, onSelect, onExpand, cache }: { query: string; onQuery: (value: string) => void; onSearch: (event: FormEvent) => void; onSnapshot: () => void; onLoadMore: () => void; hasMore: boolean; busy: string | null; types: string[]; platforms: string[]; typeFilter: string; platformFilter: string; onType: (value: string) => void; onPlatform: (value: string) => void; graph: CatalogGraph | null; nodes: CatalogNode[]; selected: CatalogNode | null; onSelect: (node: CatalogNode) => void; onExpand: (direction: "UPSTREAM" | "DOWNSTREAM") => void; cache: CatalogCacheStatus | null }) {
   const cacheReady = cache?.state === "READY";
-  return <section className="panel catalog-panel"><div className="panel-heading"><div><p className="kicker">DataHub MCP · lecture seule</p><h2>Carte 3D du catalogue et du lineage</h2></div><button className="primary" onClick={onSnapshot} disabled={busy !== null}>{busy === "catalog-cache-refresh" ? "Actualisation…" : "Actualiser depuis DataHub"}</button></div><div className="catalog-cache-status"><span className={`badge ${cacheReady ? "good" : cache?.state === "FAILED" ? "bad" : "warn"}`}>{cache?.state ?? "CONNECTING"}</span><span>{cache?.message ?? "Le serveur prépare le cache de la carte 3D."}</span>{cache && <small>{cache.loaded_assets} actifs · {cache.loaded_edges} relations · {cache.last_updated_at ? `mis à jour ${new Date(cache.last_updated_at).toLocaleTimeString()}` : "pas encore prêt"}{cache.refresh_reason ? ` · ${cache.refresh_reason}` : ""}</small>}</div><p className="small">Le serveur commence ce chargement à son démarrage, une seule fois par instance. Le navigateur lit le cache, puis le synchronise toutes les 5 secondes. Les actions LineageGuard déclenchent une actualisation immédiate; les changements externes sont détectés par le polling serveur.</p><form className="catalog-controls" onSubmit={onSearch}><label>Rechercher un actif DataHub<input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="orders, dashboard, dbt…" /></label><button className="secondary" disabled={busy !== null}>{busy === "catalog-search" ? "Recherche…" : "Rechercher"}</button><label>Type<select value={typeFilter} onChange={(event) => onType(event.target.value)}><option value="ALL">Tous</option>{types.map((value) => <option key={value}>{value}</option>)}</select></label><label>Plateforme<select value={platformFilter} onChange={(event) => onPlatform(event.target.value)}><option value="ALL">Toutes</option>{platforms.map((value) => <option key={value}>{value}</option>)}</select></label></form>{graph ? <><CatalogThreeD nodes={nodes} edges={graph.edges} onSelect={onSelect} /><CatalogDiagram nodes={nodes} edges={graph.edges} selected={selected?.urn} onSelect={onSelect} />{hasMore && <div className="catalog-more"><p className="small">D’autres actifs existent dans DataHub. Ajoutez-les à la même carte 3D sans lancer de recherche.</p><button className="secondary" onClick={onLoadMore} disabled={busy !== null}>{busy === "catalog-more" ? "Ajout en cours…" : "Charger 50 actifs supplémentaires"}</button></div>}{selected && <div className="catalog-detail"><div><p className="kicker">Actif sélectionné</p><code>{selected.urn}</code><p className="small">{selected.entity_type} · {selected.platform_urn ?? "plateforme non renseignée"} · {selected.owner_urns.length} owner(s)</p>{selected.recent_actions.length > 0 && <details className="catalog-activity"><summary>Actions LineageGuard récentes ({selected.recent_actions.length})</summary><ul>{selected.recent_actions.map((item) => <li key={`${item.timestamp}-${item.action}`}><b>{item.action}</b><span>{item.detail}</span><small>{new Date(item.timestamp).toLocaleString()}</small></li>)}</ul></details>}</div><div className="catalog-actions"><button className="secondary" onClick={() => onExpand("UPSTREAM")} disabled={busy !== null}>Charger l’amont</button><button className="secondary" onClick={() => onExpand("DOWNSTREAM")} disabled={busy !== null}>Charger l’aval</button></div></div>}</> : <p className="small">Le cache serveur charge le catalogue. La carte apparaîtra automatiquement sans action du navigateur.</p>}</section>;
+  return <section className="panel catalog-panel"><div className="panel-heading"><div><p className="kicker">DataHub MCP · lecture seule</p><h2>Carte 3D du catalogue et du lineage</h2></div><button className="primary" onClick={onSnapshot} disabled={busy !== null}>{busy === "catalog-cache-refresh" ? "Actualisation…" : "Actualiser depuis DataHub"}</button></div><div className="catalog-cache-status" data-testid="catalog-cache-status"><span className={`badge ${cacheReady ? "good" : cache?.state === "FAILED" ? "bad" : "warn"}`} data-testid="catalog-cache-state">{cache?.state ?? "CONNECTING"}</span><span>{cache?.message ?? "Le serveur prépare le cache de la carte 3D."}</span>{cache && <small data-testid="catalog-cache-counts">{cache.loaded_assets} actifs · {cache.loaded_edges} relations · {cache.last_updated_at ? `mis à jour ${new Date(cache.last_updated_at).toLocaleTimeString()}` : "pas encore prêt"}{cache.refresh_reason ? ` · ${cache.refresh_reason}` : ""}</small>}</div><p className="small">Le serveur commence ce chargement à son démarrage, une seule fois par instance. Le navigateur lit le cache, puis le synchronise toutes les 5 secondes. Les actions LineageGuard déclenchent une actualisation immédiate; les changements externes sont détectés par le polling serveur.</p><form className="catalog-controls" onSubmit={onSearch}><label>Rechercher un actif DataHub<input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="orders, dashboard, dbt…" /></label><button className="secondary" disabled={busy !== null}>{busy === "catalog-search" ? "Recherche…" : "Rechercher"}</button><label>Type<select value={typeFilter} onChange={(event) => onType(event.target.value)}><option value="ALL">Tous</option>{types.map((value) => <option key={value}>{value}</option>)}</select></label><label>Plateforme<select value={platformFilter} onChange={(event) => onPlatform(event.target.value)}><option value="ALL">Toutes</option>{platforms.map((value) => <option key={value}>{value}</option>)}</select></label></form>{graph ? <div data-testid="catalog-graph" data-node-count={nodes.length} data-edge-count={graph.edges.length}><CatalogThreeD nodes={nodes} edges={graph.edges} onSelect={onSelect} /><CatalogDiagram nodes={nodes} edges={graph.edges} selected={selected?.urn} onSelect={onSelect} />{hasMore && <div className="catalog-more"><p className="small">D’autres actifs existent dans DataHub. Ajoutez-les à la même carte 3D sans lancer de recherche.</p><button className="secondary" onClick={onLoadMore} disabled={busy !== null}>{busy === "catalog-more" ? "Ajout en cours…" : "Charger 50 actifs supplémentaires"}</button></div>}{selected && <div className="catalog-detail"><div><p className="kicker">Actif sélectionné</p><code>{selected.urn}</code><p className="small">{selected.entity_type} · {selected.platform_urn ?? "plateforme non renseignée"} · {selected.owner_urns.length} owner(s)</p>{selected.recent_actions.length > 0 && <details className="catalog-activity"><summary>Actions LineageGuard récentes ({selected.recent_actions.length})</summary><ul>{selected.recent_actions.map((item) => <li key={`${item.timestamp}-${item.action}`}><b>{item.action}</b><span>{item.detail}</span><small>{new Date(item.timestamp).toLocaleString()}</small></li>)}</ul></details>}</div><div className="catalog-actions"><button className="secondary" onClick={() => onExpand("UPSTREAM")} disabled={busy !== null}>Charger l’amont</button><button className="secondary" onClick={() => onExpand("DOWNSTREAM")} disabled={busy !== null}>Charger l’aval</button></div></div>}</div> : <p className="small">Le cache serveur charge le catalogue. La carte apparaîtra automatiquement sans action du navigateur.</p>}</section>;
 }
 
 function chatOutcome(reply: ChatReply) {

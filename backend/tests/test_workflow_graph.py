@@ -40,3 +40,25 @@ def test_workflow_endpoint_uses_the_read_only_langgraph_path() -> None:
     assert {node["id"] for node in body["graph"]["nodes"]} == {
         "request", "metadata", "impact", "plan", "critic", "judges", "hitl"
     }
+
+    restored = TestClient(app).get(
+        f"/api/v1/workflows/analysis/{body['analysis_run_id']}"
+    )
+    assert restored.status_code == 200
+    restored_body = restored.json()
+    assert restored_body["impact_report"] == body["impact_report"]
+    assert restored_body["remediation_plan"] == body["remediation_plan"]
+    assert {
+        node["id"]: node["status"] for node in restored_body["graph"]["nodes"]
+    }["plan"] == "COMPLETED"
+
+
+def test_workflow_restore_rejects_unknown_and_malformed_run_ids() -> None:
+    client = TestClient(app)
+    unknown = client.get(
+        "/api/v1/workflows/analysis/00000000-0000-0000-0000-000000000000"
+    )
+    malformed = client.get("/api/v1/workflows/analysis/not-a-run-id")
+
+    assert unknown.status_code == 404
+    assert malformed.status_code == 422

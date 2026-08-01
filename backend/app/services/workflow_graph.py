@@ -86,6 +86,27 @@ class LineageGuardWorkflow:
             graph=self.visualization(state["node_statuses"]),
         )
 
+    def restore_analysis(self, run_id: str) -> WorkflowAnalysisExecution | None:
+        """Rebuild read-only UI state from an immutable server snapshot."""
+
+        snapshot = analysis_store.restore(run_id)
+        if snapshot is None:
+            return None
+        report, plan = snapshot
+        return WorkflowAnalysisExecution(
+            analysis_run_id=run_id,
+            impact_report=report,
+            remediation_plan=plan,
+            graph=self.visualization(
+                {
+                    "request": "COMPLETED",
+                    "metadata": "COMPLETED",
+                    "impact": "COMPLETED",
+                    "plan": "COMPLETED",
+                }
+            ),
+        )
+
     async def critique(self, request: CritiqueRequest) -> WorkflowCritiqueExecution:
         state = await self._graph.ainvoke(
             {

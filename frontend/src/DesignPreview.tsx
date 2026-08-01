@@ -1,4 +1,4 @@
-import { FormEvent, Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { FormEvent, Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import App from "./App";
 import AppleHome from "./AppleHome";
 import "./design-preview.css";
@@ -11,13 +11,21 @@ import "./integration.css";
 import {
   buildChangeRequest,
   createChatHandoff,
+  draftFromRequest,
   isHandoffUsable,
   requestFingerprint,
   validateDraft,
   type AnalysisDraft,
+  type ChangeRequestPayload,
   type ChangeType,
   type ChatAnalysisHandoff,
 } from "./analysisFlow";
+import {
+  clearAnalysisRun,
+  loadAnalysisRun,
+  recoverCatalogGraph,
+  saveAnalysisRun,
+} from "./recovery";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const ForceGraph3D = lazy(() => import("react-force-graph-3d"));
@@ -29,7 +37,7 @@ type CatalogEdge = { source_urn: string; target_urn: string; direction: string; 
 type CatalogCache = { status: { state: string; loaded_assets: number; loaded_edges: number; message: string; last_updated_at?: string | null; last_checked_at?: string | null; refresh_reason?: string | null; refresh_in_progress: boolean; consecutive_failures: number; last_error?: string | null; detected_change?: string | null; generation: number }; graph: { nodes: CatalogNode[]; edges: CatalogEdge[]; truncated: boolean } };
 type RagStatus = { state: string; indexed_assets: number; total_assets: number; message: string; query_available: boolean };
 type ChatReply = { answer: string; verification_note: string; citations: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null; source: string }>; target_resolution?: { status: "NOT_REQUIRED" | "RESOLVED" | "AMBIGUOUS" | "NOT_FOUND"; detail: string; targets: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null }> } | null; verification?: { passed: boolean; factual_claim_count: number; supported_claim_count: number; claim_coverage: number } | null; action_proposal: { action: "NONE" | "ANALYZE_IMPACT" | "HITL_WRITEBACK"; reason: string }; analysis_handoff_id?: string | null; analysis_handoff_expires_at?: string | null; agent_trace: Array<{ id: string; label: string; status: string; detail: string }> };
-type WorkflowExecution = { impact_report: { blast_radius: number; confidence: number; risk_assessment: { level: string; score: number }; impacted_assets: Array<{ asset_urn: string; criticality: string }>; evidence_bundle: { items: unknown[] } }; remediation_plan: { migration_steps: Array<{ order: number; action: string; rationale: string }> } };
+type WorkflowExecution = { analysis_run_id: string; impact_report: { request: ChangeRequestPayload; blast_radius: number; confidence: number; risk_assessment: { level: string; score: number }; impacted_assets: Array<{ asset_urn: string; criticality: string }>; evidence_bundle: { items: unknown[] } }; remediation_plan: { migration_steps: Array<{ order: number; action: string; rationale: string }> } };
 type RunSummary = { run_id: string; decision: string | null; openai_status: string | null; groq_status: string | null };
 
 async function request<T>(path: string, body?: unknown): Promise<T> {
@@ -106,8 +114,19 @@ function MapView() {
 
   useEffect(() => {
     const load = () => request<CatalogCache>("/api/v1/datahub/catalog/cache").then((snapshot) => {
-      setCache(snapshot);
-      setSelected((current) => snapshot.graph.nodes.find((node) => node.urn === current?.urn) ?? current ?? snapshot.graph.nodes[0] ?? null);
+      setCache((current) => {
+        const graph = recoverCatalogGraph(current?.graph ?? null, snapshot.graph) as CatalogCache["graph"];
+        setSelected((selectedNode) => graph.nodes.find((node) => node.urn === selectedNode?.urn) ?? selectedNode ?? graph.nodes[0] ?? null);
+        return {
+          ...snapshot,
+          status: {
+            ...snapshot.status,
+            loaded_assets: graph.nodes.length,
+            loaded_edges: graph.edges.length,
+          },
+          graph,
+        };
+      });
     }).catch((caught) => setError(caught instanceof Error ? caught.message : "Catalog unavailable"));
     load();
     const timer = window.setInterval(load, 5000);
@@ -124,7 +143,17 @@ function MapView() {
 
   async function refresh() {
     setBusy(true); setError(null);
-    try { await request("/api/v1/datahub/catalog/cache/refresh", {}); }
+    try {
+      const refreshStatus = await request<CatalogCache["status"]>("/api/v1/datahub/catalog/cache/refresh", {});
+      setCache((current) => current ? {
+        ...current,
+        status: {
+          ...refreshStatus,
+          loaded_assets: current.graph.nodes.length,
+          loaded_edges: current.graph.edges.length,
+        },
+      } : current);
+    }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Refresh unavailable"); }
     finally { setBusy(false); }
   }
@@ -132,9 +161,9 @@ function MapView() {
   return <section className="page-content integration-page">
     <div className="page-heading"><div><p className="overline">LIVE DATAHUB CATALOG</p><h1>Cartography</h1><p>Explore live metadata and observed lineage from the shared server cache.</p></div><button className="ghost" onClick={refresh} disabled={busy}>{busy ? "Refreshing…" : "Refresh from DataHub"}</button></div>
     {error && <p className="integration-error">{error}</p>}
-    <div className="map-stats"><span><i className="blue-dot" /> {cache?.status.loaded_assets ?? 0} assets</span><span><i className="purple-dot" /> {cache?.status.loaded_edges ?? 0} relationships</span><span><i className="mint-dot" /> {cache?.status.refresh_in_progress ? "REFRESHING" : cache?.status.state ?? "CONNECTING"} · {cache?.status.message ?? "Waiting for the server cache"}</span></div>
+    <div className="map-stats" data-testid="catalog-cache-status"><span><i className="blue-dot" /> {cache?.status.loaded_assets ?? 0} assets</span><span><i className="purple-dot" /> {cache?.status.loaded_edges ?? 0} relationships</span><span data-testid="catalog-cache-state"><i className="mint-dot" /> {cache?.status.refresh_in_progress ? "REFRESHING" : cache?.status.state ?? "CONNECTING"} · {cache?.status.message ?? "Waiting for the server cache"}</span></div>
     {cache && <p className="cache-observability">Generation {cache.status.generation} · last successful refresh {cache.status.last_updated_at ? new Date(cache.status.last_updated_at).toLocaleTimeString() : "pending"} · last change check {cache.status.last_checked_at ? new Date(cache.status.last_checked_at).toLocaleTimeString() : "pending"}{cache.status.detected_change ? ` · detected ${cache.status.detected_change}` : ""}{cache.status.last_error ? ` · ${cache.status.last_error}` : ""}</p>}
-    <section className="map-layout live-map-layout"><div className="card map-card"><div className="map-toolbar"><label className="live-search">Search the loaded catalog<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="orders, dashboard, snowflake…" /></label><span>{nodes.length} shown</span></div><div className="live-map-canvas"><Suspense fallback={<p>Loading 3D renderer…</p>}><ForceGraph3D graphData={graphData} width={900} height={540} backgroundColor="#071126" nodeRelSize={5} nodeColor={(node: object) => colorFor((node as CatalogNode).platform_urn ?? (node as CatalogNode).entity_type)} linkColor={() => "#6e9ec5"} linkOpacity={0.65} nodeLabel={(node: object) => nodeTooltip(node as CatalogNode)} linkLabel={(link: object) => (link as { label: string }).label} onNodeClick={(node: object) => setSelected(node as CatalogNode)} /></Suspense></div></div><aside className="card detail-card">{selected ? <><div className="detail-symbol">◈</div><p className="overline">LIVE SELECTION</p><h2>{selected.label}</h2><span className="data-pill">{selected.entity_type}</span><hr /><div className="detail-line"><span>Platform</span><b>{platformName(selected.platform_urn)}</b></div><div className="detail-line"><span>Owners</span><b>{selected.owner_urns.length}</b></div><div className="detail-line"><span>Relationships</span><b>{edges.filter((edge) => edge.source_urn === selected.urn || edge.target_urn === selected.urn).length}</b></div><code className="urn">{selected.urn}</code>{selected.recent_actions.length > 0 && <div className="recent-actions"><b>Recent LineageGuard actions</b>{selected.recent_actions.map((action) => <small key={`${action.timestamp}-${action.action}`}>{action.action}: {action.detail}</small>)}</div>}</> : <p>Select a node to inspect its DataHub metadata.</p>}</aside></section>
+    <section className="map-layout live-map-layout" data-testid="catalog-graph" data-node-count={nodes.length} data-edge-count={edges.length}><div className="card map-card"><div className="map-toolbar"><label className="live-search">Search the loaded catalog<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="orders, dashboard, snowflake…" /></label><span>{nodes.length} shown</span></div><div className="live-map-canvas"><Suspense fallback={<p>Loading 3D renderer…</p>}><ForceGraph3D graphData={graphData} width={900} height={540} backgroundColor="#071126" nodeRelSize={5} nodeColor={(node: object) => colorFor((node as CatalogNode).platform_urn ?? (node as CatalogNode).entity_type)} linkColor={() => "#6e9ec5"} linkOpacity={0.65} nodeLabel={(node: object) => nodeTooltip(node as CatalogNode)} linkLabel={(link: object) => (link as { label: string }).label} onNodeClick={(node: object) => setSelected(node as CatalogNode)} /></Suspense></div></div><aside className="card detail-card">{selected ? <><div className="detail-symbol">◈</div><p className="overline">LIVE SELECTION</p><h2>{selected.label}</h2><span className="data-pill">{selected.entity_type}</span><hr /><div className="detail-line"><span>Platform</span><b>{platformName(selected.platform_urn)}</b></div><div className="detail-line"><span>Owners</span><b>{selected.owner_urns.length}</b></div><div className="detail-line"><span>Relationships</span><b>{edges.filter((edge) => edge.source_urn === selected.urn || edge.target_urn === selected.urn).length}</b></div><code className="urn">{selected.urn}</code>{selected.recent_actions.length > 0 && <div className="recent-actions"><b>Recent LineageGuard actions</b>{selected.recent_actions.map((action) => <small key={`${action.timestamp}-${action.action}`}>{action.action}: {action.detail}</small>)}</div>}</> : <p>Select a node to inspect its DataHub metadata.</p>}</aside></section>
   </section>;
 }
 
@@ -190,6 +219,8 @@ function AnalysisView({ go, handoff, onClearHandoff }: {
   const [submittedFingerprint, setSubmittedFingerprint] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [restoredFromServer, setRestoredFromServer] = useState(false);
+  const restoreAttempted = useRef(false);
   const sessionId = useMemo(chatSessionId, []);
   const draft = useMemo<AnalysisDraft>(() => ({
     assetUrn,
@@ -215,12 +246,46 @@ function AnalysisView({ go, handoff, onClearHandoff }: {
     setAssetUrn(handoff.target.urn);
     setExecution(null);
     setSubmittedFingerprint(null);
+    setRestoredFromServer(false);
+    clearAnalysisRun(window.sessionStorage);
   }, [handoff]);
+
+  useEffect(() => {
+    if (restoreAttempted.current) return;
+    restoreAttempted.current = true;
+    if (handoff) return;
+    const storedRunId = loadAnalysisRun(window.sessionStorage);
+    if (!storedRunId) return;
+    request<WorkflowExecution>(`/api/v1/workflows/analysis/${storedRunId}`)
+      .then((restoredExecution) => {
+        const restored = draftFromRequest(restoredExecution.impact_report.request);
+        setAssetUrn(restored.assetUrn);
+        setChangeType(restored.changeType);
+        setColumnName(restored.columnName);
+        setNewValue(restored.newValue);
+        setReason(restored.reason);
+        setDepth(restored.depth);
+        setColumnNullable(restored.columnNullable);
+        setTypeChangeCompatible(restored.typeChangeCompatible);
+        setExecution(restoredExecution);
+        setSubmittedFingerprint(requestFingerprint(buildChangeRequest(restored)));
+        setRestoredFromServer(true);
+      })
+      .catch(() => {
+        clearAnalysisRun(window.sessionStorage);
+        setExecution(null);
+        setSubmittedFingerprint(null);
+        setRestoredFromServer(false);
+        setError("The saved analysis no longer exists on the server; no stale report was restored.");
+      });
+  }, []);
 
   useEffect(() => {
     if (submittedFingerprint !== null && fingerprint !== submittedFingerprint) {
       setExecution(null);
       setSubmittedFingerprint(null);
+      setRestoredFromServer(false);
+      clearAnalysisRun(window.sessionStorage);
     }
   }, [fingerprint, submittedFingerprint]);
 
@@ -248,6 +313,8 @@ function AnalysisView({ go, handoff, onClearHandoff }: {
         : await request<WorkflowExecution>("/api/v1/workflows/analyze", payload);
       setExecution(result);
       setSubmittedFingerprint(requestFingerprint(payload));
+      setRestoredFromServer(false);
+      saveAnalysisRun(window.sessionStorage, result.analysis_run_id);
       if (handoff) onClearHandoff();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Analysis unavailable");
@@ -274,9 +341,10 @@ function AnalysisView({ go, handoff, onClearHandoff }: {
         <label>Reason<textarea value={reason} onChange={(event) => setReason(event.target.value)} required /></label>
         {errors.length > 0 && <ul className="integration-errors">{errors.map((item) => <li key={item}>{item}</li>)}</ul>}
         <button className="cta wide" disabled={busy || errors.length > 0}>{busy ? "Reading DataHub…" : "Analyze impact →"}</button>
-        {error && <p className="integration-error">{error}</p>}
+    {error && <p className="integration-error">{error}</p>}
+    {restoredFromServer && <p className="cache-observability" data-testid="workflow-restore-status">Read-only analysis restored from the server. Judge and approval authority were reset.</p>}
       </form>
-      <aside className="analysis-side">{impact ? <section className="demo-result live-impact"><span>{impact.risk_assessment.level} · {impact.risk_assessment.score}/100</span><h3>{impact.blast_radius} assets may be affected</h3><p>{impact.evidence_bundle.items.length} DataHub evidence records support this read-only report.</p><ul>{impact.impacted_assets.slice(0, 4).map((item) => <li key={item.asset_urn}>{item.criticality} · {shortUrn(item.asset_urn)}</li>)}</ul><button className="ghost" onClick={() => go("Workspace")}>Open full review and HITL workflow →</button></section> : <section className="card guide-card"><div className="guide-icon">✦</div><h2>Simple and governed</h2><p>The system evaluates evidence and proposes steps. It never deploys a schema change.</p><div><span>1</span> Describe the change</div><div><span>2</span> Review the impact</div><div><span>3</span> Decide with evidence</div></section>}</aside>
+      <aside className="analysis-side">{impact ? <section className="demo-result live-impact" data-testid="analysis-report" data-analysis-run-id={execution?.analysis_run_id ?? ""}><span>{impact.risk_assessment.level} · {impact.risk_assessment.score}/100</span><h3>{impact.blast_radius} assets may be affected</h3><p>{impact.evidence_bundle.items.length} DataHub evidence records support this read-only report.</p><ul>{impact.impacted_assets.slice(0, 4).map((item) => <li key={item.asset_urn}>{item.criticality} · {shortUrn(item.asset_urn)}</li>)}</ul><button className="ghost" onClick={() => go("Workspace")}>Open full review and HITL workflow →</button></section> : <section className="card guide-card"><div className="guide-icon">✦</div><h2>Simple and governed</h2><p>The system evaluates evidence and proposes steps. It never deploys a schema change.</p><div><span>1</span> Describe the change</div><div><span>2</span> Review the impact</div><div><span>3</span> Decide with evidence</div></section>}</aside>
     </div>
   </section>;
 }
