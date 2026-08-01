@@ -97,6 +97,10 @@ Example query:
 
 An index can be `RUNNING` while `query_available=true`: the active Qdrant alias keeps the prior complete snapshot usable while a replacement is built. A validated alias switch publishes the new snapshot atomically and removes records that disappeared from DataHub.
 
+`POST /api/v1/chat/query` also has a whole-request deadline configured by
+`CHAT_TOTAL_TIMEOUT_SECONDS`. Expiry cancels the graph and outstanding MCP work
+and returns `504`; it never authorizes a target handoff or action proposal.
+
 When an `ANALYZE_IMPACT` response resolves exactly one live MCP target, it also
 returns `analysis_handoff_id` and `analysis_handoff_expires_at`. The frontend
 must send that ID, the same `session_id`, and the exact resolved asset URN to
@@ -107,6 +111,13 @@ The change form supports `ADD_COLUMN`, `RENAME_COLUMN`,
 `CHANGE_COLUMN_TYPE`, and `DROP_COLUMN`. Every type requires a column;
 rename/type changes additionally require `new_value`. Type-specific fields are
 not sent for unrelated change types.
+
+Validation is evidence-bound and case-insensitive: `ADD_COLUMN` rejects an
+existing field, `RENAME_COLUMN` rejects an identical or existing target, and
+`CHANGE_COLUMN_TYPE` rejects a missing current type or a target type equivalent
+to the current type after case/whitespace normalization. Multi-hop impacts are
+accepted only when `get_lineage_paths_between` supplies an exact, acyclic path
+whose hop count matches the original lineage result.
 
 ## HITL document write-back
 
@@ -145,6 +156,7 @@ a fresh analysis. The revised report must pass all gates again.
   external outcome that requires reconciliation.
 - `422`: validation failed or explicit confirmation is missing.
 - `503`: DataHub, Qdrant, or optional provider configuration is unavailable.
+- `504`: the bounded chat request deadline expired and work was cancelled.
 - `500`: unexpected server condition; inspect backend logs without copying secrets.
 
 Use `/docs` for exact Pydantic contracts rather than reconstructing full request and response objects from this overview.

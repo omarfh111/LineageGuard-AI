@@ -29,7 +29,9 @@ class MetadataInvestigator:
     def __init__(self, client: DataHubMcpClient) -> None:
         self._client = client
 
-    async def investigate(self, request: ChangeRequest) -> MetadataInvestigation:
+    async def inspect_schema(self, request: ChangeRequest) -> dict[str, Any]:
+        """Read and minimally validate the source schema before lineage fan-out."""
+
         schema_result = await self._client.list_schema_fields(request.asset_urn)
         schema = _structured_content(schema_result)
         fields = schema.get("fields", [])
@@ -37,6 +39,10 @@ class MetadataInvestigator:
             raise MetadataInvestigationError("DataHub returned an invalid schema response")
         if not fields:
             raise MetadataInvestigationError("The selected asset was not found or has no schema")
+        return schema
+
+    async def inspect_lineage(self, request: ChangeRequest) -> dict[str, Any]:
+        """Read downstream lineage only after the requested schema change is valid."""
 
         lineage_result = await self._client.get_lineage(
             request.asset_urn, "DOWNSTREAM", request.lineage_depth
@@ -47,6 +53,11 @@ class MetadataInvestigator:
             downstream.get("searchResults", []), list
         ):
             raise MetadataInvestigationError("DataHub returned an invalid lineage response")
+        return lineage
+
+    async def investigate(self, request: ChangeRequest) -> MetadataInvestigation:
+        schema = await self.inspect_schema(request)
+        lineage = await self.inspect_lineage(request)
 
         return MetadataInvestigation(schema=schema, lineage=lineage, retrieved_at=datetime.now(UTC))
 

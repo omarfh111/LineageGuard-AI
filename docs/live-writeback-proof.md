@@ -61,3 +61,28 @@ After the proof, unset `DATAHUB_WRITEBACK_ENABLED` or restore it to `false`.
 The proof uses a synthetic deterministic PASS packet so it measures the live
 MCP write and compensation path only. Judge quality remains measured separately
 by the evaluation harness.
+
+## Full governed workflow runner
+
+For a proof that includes real analysis and both configured judges before HITL,
+run the gate-only form first:
+
+```powershell
+python .\evals\runners\run_live_governed_writeback.py
+```
+
+This performs no mutation. In an explicitly approved disposable environment,
+enable `DATAHUB_WRITEBACK_ENABLED=true` for that backend instance and run:
+
+```powershell
+python .\evals\runners\run_live_governed_writeback.py --execute
+```
+
+The runner requires deterministic PASS, OpenAI PASS, Groq PASS, and aggregate
+`FINALIZE_READ_ONLY`; then it prepares an idempotent proposal, approves it,
+verifies `COMPLETED`, compensates the same persisted document URN, verifies
+`ROLLED_BACK`, and checks the exact six-event audit sequence. Compensation
+supersedes the Analysis document; it does not erase audit history.
+
+The reviewed 2026-07-31 execution and non-secret artifact identifiers are in
+[`../evals/reports/professional-validation-2026-07-31.md`](../evals/reports/professional-validation-2026-07-31.md).

@@ -53,7 +53,7 @@ Before schema, lineage, or impact analysis, the tool manager resolves a target w
 | Ambiguous schema or lineage request | Ask the user for a platform; never select an arbitrary `orders` asset |
 | Nonexistent asset | Return `NOT_FOUND`; do not call schema or lineage tools on a similar real asset |
 
-Once an MCP match resolves a single target, retries are locked to that URN. A Qdrant-only result can never be promoted to a schema or lineage target.
+Once an MCP match resolves a single target, retries are locked to that URN. A Qdrant-only result can never be promoted to a schema or lineage target. When primary live search is insufficient, Qdrant may guide up to three additional label searches (configurable). For schema intent, a `SCHEMAFIELD` result is safely projected to the parent dataset URN already encoded in its URN, with parent duplicates removed. A candidate becomes eligible only if live MCP returns that exact dataset URN. Stale or weak candidates are discarded; close scores stay ambiguous, and multiple exact-name assets remain ambiguous regardless of vector rank.
 
 ## Verification rules
 
@@ -133,6 +133,9 @@ QDRANT_COLLECTION=lineageguard_datahub
 RAG_EMBEDDING_PROVIDER=openai
 RAG_EMBEDDING_MODEL=text-embedding-3-small
 RAG_MAX_ASSETS=1500
+RAG_MCP_CONFIRMATION_CANDIDATES=3
+RAG_MCP_CONFIRMATION_MIN_SCORE=0.40
+RAG_MCP_CONFIRMATION_MIN_MARGIN=0.05
 
 OPENAI_API_KEY=
 OPENAI_CHAT_MODEL=gpt-4.1-mini

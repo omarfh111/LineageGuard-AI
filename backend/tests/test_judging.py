@@ -93,6 +93,7 @@ def judging_request() -> JudgingRequest:
                         "source_asset_urn": SOURCE_URN,
                         "downstream_asset_urn": DOWNSTREAM_URN,
                         "degree": 1,
+                        "lineage_path": [SOURCE_URN, DOWNSTREAM_URN],
                         "owner_urns": ["urn:li:corpuser:owner"],
                         "platform_urn": "urn:li:dataPlatform:tableau",
                         "criticality": "HIGH",

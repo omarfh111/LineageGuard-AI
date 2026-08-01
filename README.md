@@ -60,6 +60,7 @@ flowchart TD
     Memory["Bounded local memory"] --> P
     P --> R["Qdrant retriever"]
     P --> T["MCP tool manager"]
+    R -->|"bounded candidate labels"| T
     T --> Resolve["Resolve and lock target URN"]
     Resolve -->|"schema / lineage only"| Tools["search · list_schema_fields · get_lineage"]
     R --> Reason["Reasoning agent"]
@@ -191,10 +192,12 @@ The API starts loading the catalog when the **backend process starts**, before a
 
 Re-indexing is non-blocking when a usable Qdrant collection already exists: the status becomes `CHAT READY · INDEXING`, and questions remain available against the existing index while a separate snapshot is built. After exact point-count validation, a Qdrant alias switch publishes the complete snapshot atomically and the superseded collection is removed. Failed or empty rebuilds preserve the previous index; DataHub deletions therefore remove stale retrieval records on the next successful ingestion.
 
+Qdrant materially guides live confirmation without becoming a source of truth. For an unresolved target, the tool manager takes at most `RAG_MCP_CONFIRMATION_CANDIDATES` sufficiently strong vector candidates, searches their labels through live DataHub MCP, and accepts a candidate only when the exact same URN is returned. For schema questions, a schema-field hit may nominate the parent dataset URN explicitly embedded in that field URN; duplicate parent nominations collapse to one live lookup. Weak, stale, identifier-mismatched, ambiguous, or retry-time substitutions are discarded. If primary live search already proves one exact target, no extra vector-guided MCP call is made. A single semantic preference requires the configured score margin; otherwise the UI asks the user to disambiguate.
+
 ### Impact, review, and HITL
 
 1. Submit a change request in the impact panel.
-2. Review the deterministic evidence, affected assets, risk score, and non-executable remediation plan.
+2. Review the deterministic evidence, affected assets, risk score, and non-executable remediation plan. Duplicate adds, rename collisions, unchanged types, and type changes with missing current-type evidence fail before a report is created. Multi-hop impacts use the exact simple path returned by `get_lineage_paths_between`; an unverifiable path fails closed.
 3. Optionally request the NVIDIA advisory critique.
 4. Optionally run the two independent final judges. Gate 0 reloads the
    server-owned analysis and independently reconstructs evidence bindings,
@@ -219,6 +222,9 @@ QDRANT_COLLECTION=lineageguard_datahub
 RAG_EMBEDDING_PROVIDER=openai
 RAG_EMBEDDING_MODEL=text-embedding-3-small
 RAG_MAX_ASSETS=1500
+RAG_MCP_CONFIRMATION_CANDIDATES=3
+RAG_MCP_CONFIRMATION_MIN_SCORE=0.40
+RAG_MCP_CONFIRMATION_MIN_MARGIN=0.05
 
 CATALOG_AUTOLOAD=true
 CATALOG_REFRESH_SECONDS=60
@@ -237,6 +243,7 @@ CHAT_MEMORY_TTL_HOURS=168
 OPENAI_API_KEY=
 OPENAI_CHAT_MODEL=gpt-4.1-mini
 CHAT_TIMEOUT_SECONDS=15
+CHAT_TOTAL_TIMEOUT_SECONDS=75
 OPENAI_JUDGE_MODEL=gpt-4.1-mini
 GROQ_API_KEY=
 GROQ_JUDGE_MODEL=openai/gpt-oss-20b
@@ -264,6 +271,11 @@ planning, answer generation, and each live MCP read. An embedding failure
 continues with MCP-only evidence; a model timeout returns a cited deterministic
 summary; an MCP timeout fails closed without authorizing a target handoff. The
 public agent trace records the exact fallback path.
+
+`CHAT_TOTAL_TIMEOUT_SECONDS` is the server-wide request deadline. It cancels
+the complete LangGraph execution, including outstanding MCP work, so an
+abandoned browser request cannot continue consuming DataHub capacity in the
+background.
 
 `CATALOG_LINEAGE_CONCURRENCY` is enforced inside the shared MCP session as
 well as in fallback traversal. This prevents the 3D background enrichment from
@@ -312,11 +324,36 @@ npm run check
 # Offline, no-cost RAG/MCP regression metrics
 Set-Location ..
 python .\evals\runners\run_agentic_rag_evals.py
+
+# Live, read-only 30-query professional benchmark
+python .\evals\runners\run_live_agentic_evals.py --timeout-seconds 85
+
+# Analyze and run both judges without permitting a mutation
+python .\evals\runners\run_live_governed_writeback.py
 ```
 
-The latest committed offline baseline measures retrieval identity, schema and lineage facts, tool selection, citation coverage, verifier blocking, latency, and cost without a provider call. Runtime verification now audits every extracted factual claim and exposes claim count, supported count, coverage, evidence IDs, and a public support reason. The live runner adds claim-support coverage, unsupported-claim escape rate, and fully-supported verified-answer rate. The dated live showcase benchmark records `Precision@6=0.667`, `Recall@6=1.000`, `MRR@6=1.000`, and `NDCG@6=1.000` for its reviewed six-scenario suite; it predates the new claim-level metrics and is not silently re-labelled as a new result.
+The latest committed offline baseline measures retrieval identity, schema and lineage facts, tool selection, citation coverage, verifier blocking, latency, and cost without a provider call. Runtime verification audits every extracted factual claim and exposes claim count, supported count, coverage, evidence IDs, and a public support reason. The live runner adds claim-support coverage, unsupported-claim escape rate, and fully-supported verified-answer rate.
 
-For a professional end-to-end acceptance protocol, including required artifacts and a 20-query reviewed ground truth, use [the acceptance test plan](docs/acceptance-test-plan.md). For a dedicated disposable-environment write proof, use [the live write-back proof](docs/live-writeback-proof.md).
+The isolated professional run on 2026-07-31 completed all 30 reviewed cases;
+22 cases have exact ranking labels. It measured `Precision@6=0.992`,
+`Recall@6=1.000`, `MRR@6=1.000`, `NDCG@6=1.000`, router/tool/verification/
+target accuracy of `1.000`, zero unsupported-claim escape, p95 latency of
+`9,869.4 ms`, 4,733 measured tokens, and estimated OpenAI cost of
+`USD 0.0040112`. The separate governed proof completed analysis, deterministic
+validation, two independent PASS verdicts, explicit HITL approval, one DataHub
+Analysis-document write, and compensation to `ROLLED_BACK`. See the
+[reviewed validation report](evals/reports/professional-validation-2026-07-31.md)
+for methodology, exact boundaries, and audit evidence.
+
+The 2026-08-01 P0 correctness run additionally proves live Qdrant-guided MCP
+confirmation, 35 exact multi-hop paths in a 36-asset impact report, and live
+rejection of duplicate add, rename-collision, and unchanged-type requests. See
+the [P0 correctness report](evals/reports/p0-correctness-live-2026-08-01.md).
+
+The older six-scenario showcase benchmark records `Precision@6=0.667`; it is
+retained as historical evidence and is not presented as the current result.
+
+For the full acceptance protocol, use [the acceptance test plan](docs/acceptance-test-plan.md). The opt-in mutation procedure and its safety constraints are documented in [the live write-back proof](docs/live-writeback-proof.md).
 
 ## Documentation
 

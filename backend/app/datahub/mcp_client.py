@@ -197,6 +197,25 @@ class DataHubMcpClient:
             ]
         )
 
+    async def get_lineage_paths_many(
+        self, requests: Sequence[tuple[str, str]]
+    ) -> list[dict[str, Any]]:
+        """Verify exact downstream paths without opening one MCP process per target."""
+
+        return await self.call_tools(
+            [
+                (
+                    "get_lineage_paths_between",
+                    {
+                        "source_urn": source_urn,
+                        "target_urn": target_urn,
+                        "direction": "downstream",
+                    },
+                )
+                for source_urn, target_urn in requests
+            ]
+        )
+
     async def inspect_catalog_assets(
         self, urns: Sequence[str]
     ) -> list[tuple[dict[str, Any], dict[str, Any]]]:

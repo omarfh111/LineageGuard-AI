@@ -60,7 +60,12 @@ sequenceDiagram
     A->>M: DataHub search
     M->>D: Read metadata
     D-->>M: Live candidates
-    M-->>A: Resolve target URN or ambiguity
+    M-->>A: Primary live candidates
+    opt primary search did not prove one exact target
+        A->>M: Search bounded Qdrant candidate labels
+        M-->>A: Exact live URN confirmations only
+    end
+    A->>A: Resolve target URN or ambiguity
     alt schema or lineage request with one target
         A->>M: list_schema_fields and/or get_lineage
         M->>D: Read live evidence
@@ -86,8 +91,8 @@ sequenceDiagram
 | Agent / component | Input | Output | Invariant |
 |---|---|---|---|
 | Planning agent | User question and bounded non-evidence memory | Search terms and tool needs | Normalizes conversational words and cannot call tools |
-| Qdrant retriever | Question | Candidate metadata | Candidates are not accepted as factual evidence |
-| Target resolver | MCP search matches + active verified asset | `RESOLVED`, `AMBIGUOUS`, `NOT_FOUND`, or `NOT_REQUIRED` | Schema/lineage needs a single target; a platform is requested when ambiguous |
+| Qdrant retriever | Question | Candidate metadata | At most three strong candidates may guide live searches; candidates are never factual evidence |
+| Target resolver | Primary and Qdrant-guided exact MCP matches + active verified asset | `RESOLVED`, `AMBIGUOUS`, `NOT_FOUND`, or `NOT_REQUIRED` | Schema/lineage needs a single target; vector rank cannot break an exact-name platform ambiguity |
 | MCP tool manager | Locked target and plan | Read-only evidence records | Retries retain the same target; unknown assets never trigger unrelated schema or lineage reads |
 | Reasoning agent | Candidate sources and named evidence | Draft answer | Every DataHub assertion is independently cited; Qdrant is context, never proof |
 | Verification agent | Draft answer, evidence, target | Per-claim support decisions, verified response, or safe limitation | Every claim needs a live MCP factual anchor; evidence must belong to the resolved target URN |

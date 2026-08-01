@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -58,14 +59,17 @@ async def ingest_metadata(client: DataHubClientDependency) -> RagIndexStatus:
 @router.post("/query", response_model=ChatResponse)
 async def query(request: ChatRequest, client: DataHubClientDependency) -> ChatResponse:
     try:
+        settings = get_settings()
         agent = HybridChatAgent(
-            client, QdrantMetadataIndex(client, get_settings()), get_settings()
+            client, QdrantMetadataIndex(client, settings), settings
         )
         agent.set_memory_context(
             chat_memory_store.context_for(request.session_id, request.memory_enabled),
             chat_memory_store.active_asset_for(request.session_id, request.memory_enabled),
         )
-        response = await agent.respond(request)
+        response = await asyncio.wait_for(
+            agent.respond(request), timeout=settings.chat_total_timeout_seconds
+        )
         handoff = None
         resolution = response.target_resolution
         if (
@@ -94,6 +98,11 @@ async def query(request: ChatRequest, client: DataHubClientDependency) -> ChatRe
                 ),
             }
         )
+    except (TimeoutError, asyncio.TimeoutError) as error:
+        raise HTTPException(
+            status.HTTP_504_GATEWAY_TIMEOUT,
+            "The Agentic RAG request exceeded its server-side deadline; in-flight MCP work was cancelled.",
+        ) from error
     except (RagConfigurationError, ChatConfigurationError, DataHubConfigurationError) as error:
         raise HTTPException(503, str(error)) from error
 

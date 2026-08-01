@@ -39,7 +39,11 @@ class Settings:
     rag_embedding_provider: str = "openai"
     chat_model: str | None = None
     chat_timeout_seconds: int = 15
+    chat_total_timeout_seconds: int = 75
     rag_max_assets: int = 1500
+    rag_mcp_confirmation_candidates: int = 3
+    rag_mcp_confirmation_min_score: float = 0.40
+    rag_mcp_confirmation_min_margin: float = 0.05
     demo_mode: bool = False
     catalog_autoload: bool = True
     catalog_refresh_seconds: int = 60
@@ -91,7 +95,19 @@ def get_settings() -> Settings:
         rag_embedding_provider=os.getenv("RAG_EMBEDDING_PROVIDER", "openai").strip().lower(),
         chat_model=os.getenv("OPENAI_CHAT_MODEL") or os.getenv("OPENAI_JUDGE_MODEL") or None,
         chat_timeout_seconds=max(5, min(120, int(os.getenv("CHAT_TIMEOUT_SECONDS", "15")))),
+        chat_total_timeout_seconds=max(
+            15, min(300, int(os.getenv("CHAT_TOTAL_TIMEOUT_SECONDS", "75")))
+        ),
         rag_max_assets=int(os.getenv("RAG_MAX_ASSETS", "1500")),
+        rag_mcp_confirmation_candidates=max(
+            1, min(10, int(os.getenv("RAG_MCP_CONFIRMATION_CANDIDATES", "3")))
+        ),
+        rag_mcp_confirmation_min_score=max(
+            0.0, min(1.0, float(os.getenv("RAG_MCP_CONFIRMATION_MIN_SCORE", "0.40")))
+        ),
+        rag_mcp_confirmation_min_margin=max(
+            0.0, min(1.0, float(os.getenv("RAG_MCP_CONFIRMATION_MIN_MARGIN", "0.05")))
+        ),
         demo_mode=_enabled(os.getenv("DEMO_MODE", "false")),
         catalog_autoload=_enabled(os.getenv("CATALOG_AUTOLOAD", "true")),
         catalog_refresh_seconds=max(15, int(os.getenv("CATALOG_REFRESH_SECONDS", "60"))),

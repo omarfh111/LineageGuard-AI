@@ -35,6 +35,16 @@ python .\evals\runners\run_agentic_rag_evals.py
 
 For a live, read-only benchmark, run each scenario in a fresh session or with memory disabled. Store JSON evidence in an untracked `evidence/` folder. Review `relevant_urns` manually before interpreting retrieval metrics.
 
+The committed professional dataset and runner are reproducible with:
+
+```powershell
+python .\evals\runners\run_live_agentic_evals.py --timeout-seconds 85
+python .\evals\runners\run_live_governed_writeback.py
+```
+
+The latest reviewed result is
+[`../evals/reports/professional-validation-2026-07-31.md`](../evals/reports/professional-validation-2026-07-31.md).
+
 ## 3. Acceptance matrix
 
 | ID | Area | Procedure | Required result |
@@ -57,6 +67,7 @@ For a live, read-only benchmark, run each scenario in a fresh session or with me
 | RAG-05 | Pronoun memory | After a verified Snowflake answer ask `What is its schema?`. | Reuses only the previously verified exact URN and obtains fresh MCP evidence. |
 | RAG-06 | No-proof safety | Ask for schema of `lineageguard_eval_no_such_asset_7f3c`. | `LIMITED` / `NOT_FOUND`; zero schema or lineage reads on unrelated assets. |
 | RAG-07 | Re-index continuity | With a completed index, start indexing again and ask a catalog question. | Index state is `RUNNING` with `query_available=true`; chat remains usable. |
+| RAG-08 | Hybrid confirmation | Use a semantic query whose top Qdrant candidate is not returned by the primary DataHub search, then repeat with a stale candidate fixture. | First run performs a bounded label search and admits only the exact live URN; stale candidate returns `NOT_FOUND` and triggers no schema/lineage read. |
 | MEM-01 | Memory isolation | Clear memory then repeat a pronoun question; repeat from a second browser profile. | No prior target is reused; sessions do not share memory. |
 | ROUTER-01 | Normal question | Ask a catalog question. | Action is `NONE`; no workflow or write proposal. |
 | ROUTER-02 | Change request | Ask to drop `customer_status` from a platform-qualified `orders` asset. | Exact target resolves; `ANALYZE_IMPACT` is proposed; explicit confirmation is required. |
@@ -67,6 +78,10 @@ For a live, read-only benchmark, run each scenario in a fresh session or with me
 | FLOW-04 | Handoff tampering | Replace the transferred asset URN or browser session before execution. | `409`; zero analysis run for the substituted target. |
 | FLOW-05 | Stale form invalidation | Edit any field after a successful analysis. | Existing report, critique, judges, proposal, and approval key disappear; fresh analysis required. |
 | FLOW-06 | Revision loop | Enter reviewer feedback and choose `REQUEST_REVISION`. | Old proposal becomes terminal; form is restored; unchanged resubmission is blocked; changed request starts from analysis. |
+| FLOW-07 | Invalid add | Submit `ADD_COLUMN` for an existing field with different case. | Request fails before report creation; no judge or action is available. |
+| FLOW-08 | Rename collision | Rename a field to an existing field and then to the same name with different case. | Both requests fail before report creation. |
+| FLOW-09 | Type identity | Submit a type change equal to the current type with different case/spacing, then omit current type from a disposable fixture. | Both requests fail closed; caller compatibility cannot create a compatibility conclusion. |
+| FLOW-10 | Multi-hop proof | Analyze a fixture with a two-hop descendant and tamper with its intermediate URN before Gate 0. | Report contains the exact MCP path; Gate 0 accepts the original and rejects the tampered path. |
 | JUDGE-01 | Independent review | Run NVIDIA then OpenAI/Groq with consent. | Provider/model/verdict visible independently; aggregate follows Gate 0 policy. |
 | HITL-01 | Rejection | Prepare an eligible proposal then reject/revise it. | Audit persists; no document is written. |
 | HITL-02 | Idempotency | Repeat an approval API request with same idempotency key in disposable proof. | At most one document action is recorded. |
@@ -111,4 +126,7 @@ Keep these artifacts untracked or outside the repository, after checking that th
 8. Reviewed 20-query ground truth plus three dated live metric reports.
 9. Optional disposable live-write proof with created and superseded document evidence.
 
-The dated six-scenario showcase benchmark in [`../evals/reports/live-agentic-rag-2026-07-23.md`](../evals/reports/live-agentic-rag-2026-07-23.md) is a useful smoke baseline, not a replacement for the 20-query acceptance benchmark.
+The 30-case professional result in
+[`../evals/reports/professional-validation-2026-07-31.md`](../evals/reports/professional-validation-2026-07-31.md)
+is the current acceptance benchmark. The older six-scenario showcase report is
+retained only as a historical smoke baseline.

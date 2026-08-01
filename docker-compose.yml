@@ -51,6 +51,7 @@ services:
       DEMO_MODE: ${DEMO_MODE:-false}
       OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-${OPENAI_JUDGE_MODEL:-}}
       CHAT_TIMEOUT_SECONDS: ${CHAT_TIMEOUT_SECONDS:-15}
+      CHAT_TOTAL_TIMEOUT_SECONDS: ${CHAT_TOTAL_TIMEOUT_SECONDS:-75}
     depends_on:
       qdrant:
         condition: service_healthy

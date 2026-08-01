@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.domain.contracts import (
     BusinessRollbackPlan,
+    ChangeRequest,
     ChangeType,
     ImpactReport,
     PlanStep,
@@ -30,8 +31,8 @@ class DeterministicRemediationPlanner:
             source_asset_urn=request.asset_urn,
             change_type=request.change_type,
             migration_steps=_migration_steps(report),
-            backward_compatible=_compatibility(request.change_type)[0],
-            forward_compatible=_compatibility(request.change_type)[1],
+            backward_compatible=_compatibility(request)[0],
+            forward_compatible=_compatibility(request)[1],
             deprecation_period=_deprecation_period(request.change_type),
             recommended_tests=tests,
             downstream_checks=[
@@ -123,15 +124,21 @@ def _consumer_migration_action(
     return f"Remove consumer references to {column_name} before proposing its removal."
 
 
-def _compatibility(change_type: ChangeType) -> tuple[bool | None, bool | None]:
+def _compatibility(request: ChangeRequest) -> tuple[bool | None, bool | None]:
     """Do not claim compatibility without a consumer contract and column-type proof."""
 
+    change_type = request.change_type
     if change_type is ChangeType.ADD_COLUMN:
         return None, None
     if change_type is ChangeType.RENAME_COLUMN:
         return None, None
     if change_type is ChangeType.CHANGE_COLUMN_TYPE:
-        return False, False
+        # A caller may explicitly declare incompatibility, which is safe to
+        # preserve. A compatibility claim is never promoted without downstream
+        # contract evidence, so true/unknown remain undetermined.
+        if request.type_change_compatible is False:
+            return False, False
+        return None, None
     return False, False
 
 

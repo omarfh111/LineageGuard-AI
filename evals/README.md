@@ -39,3 +39,39 @@ authoritative MCP source itself is complete and whether answer wording is useful
 
 The evaluated local showcase result is in
 [`reports/live-agentic-rag-2026-07-23.md`](reports/live-agentic-rag-2026-07-23.md).
+
+## Professional live validation
+
+`datasets/professional-agentic-rag-v1.json` is the reviewed, LangSmith-ready
+RAG dataset used for the current acceptance result. It contains 30 unique,
+isolated cases across multi-platform discovery, platform-qualified targets,
+schema, lineage, ambiguity, and nonexistent assets. Twenty-two cases have
+manually reviewed exact-URN ranking truth.
+
+Run the read-only suite against a healthy API:
+
+```powershell
+python .\evals\runners\run_live_agentic_evals.py --timeout-seconds 85
+```
+
+The current reviewed result is
+[`reports/professional-validation-2026-07-31.md`](reports/professional-validation-2026-07-31.md):
+30/30 completed, `Precision@6=0.992`, `Recall@6=1.000`, `MRR@6=1.000`,
+`NDCG@6=1.000`, all routing/target/tool/verification gates at `1.000`, and
+unsupported-claim escape rate `0.000`.
+
+The focused live correctness evidence for hybrid Qdrant/MCP confirmation,
+multi-hop path expansion, and invalid change contracts is recorded in
+[`reports/p0-correctness-live-2026-08-01.md`](reports/p0-correctness-live-2026-08-01.md).
+
+The governed workflow runner first performs live analysis and both independent
+judges without mutation:
+
+```powershell
+python .\evals\runners\run_live_governed_writeback.py
+```
+
+Adding `--execute` is an explicit opt-in to create one DataHub Analysis
+document and compensate it. The runner refuses to proceed unless deterministic
+validation and both judges PASS, uses idempotency keys, validates the six-event
+audit sequence, and reports the proposal ID if reconciliation is needed.

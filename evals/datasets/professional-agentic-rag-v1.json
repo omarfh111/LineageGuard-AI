@@ -1,0 +1,119 @@
+{
+  "dataset_id": "lineageguard-professional-agentic-rag-v1",
+  "dataset_type": "rag",
+  "reviewed_at": "2026-07-31",
+  "reviewed_environment": "DataHub showcase-ecommerce local datapack",
+  "ground_truth_method": "Exact dataset labels, platforms, and URNs were reviewed from the live DataHub catalog cache and MCP search output. Expected tools, target states, and safety outcomes were reviewed against the public API contract; no LLM generated the reference labels.",
+  "relevance_policy": "A retrieval result is relevant only when its entity type is DATASET, its label equals the requested asset name case-insensitively, and any explicit platform constraint matches. Schema cases require the single reviewed platform-specific URN.",
+  "asset_sets": {
+    "orders": [
+      "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.orders,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.orders,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,b2fd91.order_entry_db.order_entry.orders,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:s3,b2fd91.demo-data-bucket/order_entry/orders,PROD)"
+    ],
+    "customers": [
+      "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.customers,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.customers,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,b2fd91.order_entry_db.order_entry.customers,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:s3,b2fd91.demo-data-bucket/order_entry/customers,PROD)"
+    ],
+    "products": [
+      "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.products,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.products,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,b2fd91.order_entry_db.order_entry.products,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:s3,b2fd91.demo-data-bucket/order_entry/products,PROD)"
+    ],
+    "product_categories": [
+      "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.product_categories,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.product_categories,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,b2fd91.order_entry_db.order_entry.product_categories,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:s3,b2fd91.demo-data-bucket/order_entry/product_categories,PROD)"
+    ],
+    "regions": [
+      "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.regions,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.regions,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,b2fd91.order_entry_db.order_entry.regions,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:s3,b2fd91.demo-data-bucket/order_entry/regions,PROD)"
+    ],
+    "warehouses": [
+      "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.warehouses,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.warehouses,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,b2fd91.order_entry_db.order_entry.warehouses,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:s3,b2fd91.demo-data-bucket/order_entry/warehouses,PROD)"
+    ],
+    "countries": [
+      "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.countries,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.countries,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,b2fd91.order_entry_db.order_entry.countries,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:s3,b2fd91.demo-data-bucket/order_entry/countries,PROD)"
+    ],
+    "addresses": [
+      "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.addresses,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.addresses,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,b2fd91.order_entry_db.order_entry.addresses,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:s3,b2fd91.demo-data-bucket/order_entry/addresses,PROD)"
+    ],
+    "inventories": [
+      "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.inventories,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.inventories,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,b2fd91.order_entry_db.order_entry.inventories,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:s3,b2fd91.demo-data-bucket/order_entry/inventories,PROD)"
+    ],
+    "order_items": [
+      "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.order_items,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.order_items,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,b2fd91.order_entry_db.order_entry.order_items,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:s3,b2fd91.demo-data-bucket/order_entry/order_items,PROD)"
+    ],
+    "order_details": [
+      "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.ORDER_ENTRY_DB.analytics.order_details,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.analytics.order_details,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:looker,b2fd91.order-entry-looker.view.order_details,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:powerbi,b2fd91.datahub_order_entries.ORDER_DETAILS,PROD)"
+    ],
+    "promotions": [
+      "urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.promotions,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:tableau,b2fd91.b980a8c5-28eb-119e-f6ca-4da32732e5be,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.promotions,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:postgres,b2fd91.order_entry_db.order_entry.promotions,PROD)",
+      "urn:li:dataset:(urn:li:dataPlatform:s3,b2fd91.demo-data-bucket/order_entry/promotions,PROD)"
+    ]
+  },
+  "examples": [
+    {"id":"catalog-orders","inputs":{"message":"Find all datasets named orders."},"outputs":{"relevant_asset_set":"orders","tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+    {"id":"catalog-customers","inputs":{"message":"Which DataHub datasets are named customers?"},"outputs":{"relevant_asset_set":"customers","tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+    {"id":"catalog-products","inputs":{"message":"List the datasets named products."},"outputs":{"relevant_asset_set":"products","tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+    {"id":"catalog-product-categories","inputs":{"message":"Find datasets called product_categories."},"outputs":{"relevant_asset_set":"product_categories","tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+    {"id":"catalog-regions","inputs":{"message":"Show every dataset named regions."},"outputs":{"relevant_asset_set":"regions","tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+    {"id":"catalog-warehouses","inputs":{"message":"Find all datasets named warehouses."},"outputs":{"relevant_asset_set":"warehouses","tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+    {"id":"catalog-countries","inputs":{"message":"List DataHub datasets called countries."},"outputs":{"relevant_asset_set":"countries","tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+    {"id":"catalog-addresses","inputs":{"message":"Which datasets are named addresses?"},"outputs":{"relevant_asset_set":"addresses","tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+    {"id":"catalog-inventories","inputs":{"message":"Find the datasets named inventories."},"outputs":{"relevant_asset_set":"inventories","tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+    {"id":"catalog-order-items","inputs":{"message":"List every dataset called order_items."},"outputs":{"relevant_asset_set":"order_items","tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+    {"id":"catalog-order-details","inputs":{"message":"Find all datasets named order_details."},"outputs":{"relevant_asset_set":"order_details","tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+    {"id":"catalog-promotions","inputs":{"message":"Which datasets are named promotions?"},"outputs":{"relevant_asset_set":"promotions","tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+
+    {"id":"platform-snowflake-orders","inputs":{"message":"Find the Snowflake orders dataset."},"outputs":{"relevant_urns":["urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.orders,PROD)"],"tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+    {"id":"platform-postgres-customers","inputs":{"message":"Find the Postgres customers dataset."},"outputs":{"relevant_urns":["urn:li:dataset:(urn:li:dataPlatform:postgres,b2fd91.order_entry_db.order_entry.customers,PROD)"],"tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+    {"id":"platform-dbt-products","inputs":{"message":"Find the dbt products dataset."},"outputs":{"relevant_urns":["urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.products,PROD)"],"tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+    {"id":"platform-s3-regions","inputs":{"message":"Find the S3 regions dataset."},"outputs":{"relevant_urns":["urn:li:dataset:(urn:li:dataPlatform:s3,b2fd91.demo-data-bucket/order_entry/regions,PROD)"],"tools":["search"],"action":"NONE","verification_passed":true,"target_status":"NOT_REQUIRED"}},
+
+    {"id":"schema-snowflake-orders","inputs":{"message":"What is the schema of the Snowflake orders dataset? List field names and types."},"outputs":{"relevant_urns":["urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.orders,PROD)"],"tools":["search","list_schema_fields"],"action":"NONE","verification_passed":true,"target_status":"RESOLVED"}},
+    {"id":"schema-postgres-customers","inputs":{"message":"List the schema fields and types for the Postgres customers dataset."},"outputs":{"relevant_urns":["urn:li:dataset:(urn:li:dataPlatform:postgres,b2fd91.order_entry_db.order_entry.customers,PROD)"],"tools":["search","list_schema_fields"],"action":"NONE","verification_passed":true,"target_status":"RESOLVED"}},
+    {"id":"schema-dbt-products","inputs":{"message":"Show the schema columns for the dbt products dataset."},"outputs":{"relevant_urns":["urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.products,PROD)"],"tools":["search","list_schema_fields"],"action":"NONE","verification_passed":true,"target_status":"RESOLVED"}},
+    {"id":"schema-snowflake-order-details","inputs":{"message":"What fields exist in the Snowflake order_details dataset?"},"outputs":{"relevant_urns":["urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.analytics.order_details,PROD)"],"tools":["search","list_schema_fields"],"action":"NONE","verification_passed":true,"target_status":"RESOLVED"}},
+    {"id":"schema-dbt-regions","inputs":{"message":"Give the schema of the dbt regions dataset."},"outputs":{"relevant_urns":["urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.regions,PROD)"],"tools":["search","list_schema_fields"],"action":"NONE","verification_passed":true,"target_status":"RESOLVED"}},
+    {"id":"schema-postgres-warehouses","inputs":{"message":"List columns and types for the Postgres warehouses dataset."},"outputs":{"relevant_urns":["urn:li:dataset:(urn:li:dataPlatform:postgres,b2fd91.order_entry_db.order_entry.warehouses,PROD)"],"tools":["search","list_schema_fields"],"action":"NONE","verification_passed":true,"target_status":"RESOLVED"}},
+
+    {"id":"lineage-snowflake-orders","inputs":{"message":"Show downstream lineage for the Snowflake orders dataset."},"outputs":{"tools":["search","get_lineage"],"action":"NONE","verification_passed":true,"target_status":"RESOLVED"}},
+    {"id":"lineage-dbt-order-details","inputs":{"message":"Which downstream assets depend on the dbt order_details dataset?"},"outputs":{"tools":["search","get_lineage"],"action":"NONE","verification_passed":true,"target_status":"RESOLVED"}},
+    {"id":"lineage-postgres-customers","inputs":{"message":"Get downstream lineage for the Postgres customers dataset."},"outputs":{"tools":["search","get_lineage"],"action":"NONE","verification_passed":true,"target_status":"RESOLVED"}},
+    {"id":"lineage-snowflake-promotions","inputs":{"message":"Show consumers downstream from the Snowflake promotions dataset."},"outputs":{"tools":["search","get_lineage"],"action":"NONE","verification_passed":true,"target_status":"RESOLVED"}},
+
+    {"id":"negative-schema-missing","inputs":{"message":"What is the schema of lineageguard_eval_no_such_asset_7f3c?"},"outputs":{"tools":["search"],"action":"NONE","verification_passed":false,"target_status":"NOT_FOUND"}},
+    {"id":"negative-lineage-missing","inputs":{"message":"Show downstream lineage for lineageguard_eval_missing_asset_91ac."},"outputs":{"tools":["search"],"action":"NONE","verification_passed":false,"target_status":"NOT_FOUND"}},
+    {"id":"ambiguous-schema-orders","inputs":{"message":"What is the schema of the orders dataset?"},"outputs":{"tools":["search"],"action":"NONE","verification_passed":false,"target_status":"AMBIGUOUS"}},
+    {"id":"ambiguous-lineage-customers","inputs":{"message":"Show downstream lineage for the customers dataset."},"outputs":{"tools":["search"],"action":"NONE","verification_passed":false,"target_status":"AMBIGUOUS"}}
+  ]
+}

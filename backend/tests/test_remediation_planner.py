@@ -100,6 +100,18 @@ def test_add_column_plan_requires_contract_evidence_before_claiming_compatibilit
     assert (plan.backward_compatible, plan.forward_compatible) == (None, None)
 
 
+def test_type_change_does_not_trust_an_unverified_compatibility_claim() -> None:
+    plan = DeterministicRemediationPlanner().plan(
+        impact_report(
+            "CHANGE_COLUMN_TYPE",
+            new_value="VARCHAR(64)",
+            type_change_compatible=True,
+        )
+    )
+
+    assert (plan.backward_compatible, plan.forward_compatible) == (None, None)
+
+
 def test_remediation_endpoint_returns_a_non_executing_plan() -> None:
     report = impact_report("DROP_COLUMN")
     response = TestClient(app).post(

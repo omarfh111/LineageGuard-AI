@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from app.core.config import get_settings
 from app.datahub.mcp_client import (
     DataHubConfigurationError,
     DataHubMcpClient,
@@ -117,6 +118,11 @@ async def full_catalog_snapshot(
 ) -> CatalogGraph:
     """Return one relation-aware page for the progressive 3D catalog graph."""
 
+    if not get_settings().catalog_autoload:
+        raise HTTPException(
+            503,
+            "Direct catalog snapshots are disabled while catalog autoload is disabled.",
+        )
     try:
         return await catalog_snapshot(
             client, max_assets=max_assets, max_edges=max_edges, offset=offset

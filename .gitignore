@@ -17,6 +17,7 @@ backend/*.db
 backend/*.sqlite
 backend/*.sqlite3
 backend/tests/*.db
+/lineageguard.db
 data/
 backend/.bootstrap-deps/
 backend/.tmp-bootstrap/

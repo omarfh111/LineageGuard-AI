@@ -19,7 +19,29 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CASES = ROOT / "evals" / "datasets" / "live-agentic-rag-template.json"
+DEFAULT_CASES = ROOT / "evals" / "datasets" / "professional-agentic-rag-v1.json"
+
+
+def load_cases(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Accept the legacy case list and the LangSmith-ready examples format."""
+
+    if isinstance(payload.get("cases"), list):
+        return payload["cases"]
+    asset_sets = payload.get("asset_sets", {})
+    cases: list[dict[str, Any]] = []
+    for example in payload.get("examples", []):
+        expected = dict(example.get("outputs", {}))
+        asset_set = expected.pop("relevant_asset_set", None)
+        if asset_set:
+            expected["relevant_urns"] = asset_sets.get(asset_set, [])
+        cases.append(
+            {
+                "id": example["id"],
+                "message": example["inputs"]["message"],
+                "expected": expected,
+            }
+        )
+    return cases
 
 
 def percentile(values: list[float], point: float) -> float:
@@ -73,7 +95,7 @@ def post_json(url: str, body: dict[str, Any], timeout_seconds: float) -> dict[st
 
 def run(api_base_url: str, cases_path: Path, timeout_seconds: float, k: int) -> dict[str, Any]:
     payload = json.loads(cases_path.read_text(encoding="utf-8"))
-    cases: list[dict[str, Any]] = payload["cases"]
+    cases = load_cases(payload)
     outcomes: list[dict[str, Any]] = []
     latencies: list[float] = []
     costs: list[float] = []
@@ -94,6 +116,7 @@ def run(api_base_url: str, cases_path: Path, timeout_seconds: float, k: int) -> 
     supported_claims = 0
     escaped_unsupported_claims = 0
     fully_supported_verified_answers = 0
+    target_correct = 0
 
     for case in cases:
         started = time.perf_counter()
@@ -132,6 +155,8 @@ def run(api_base_url: str, cases_path: Path, timeout_seconds: float, k: int) -> 
                 escaped_unsupported_claims += max(0, case_claims - case_supported)
             expected_verification = expected.get("verification_passed", True)
             verification_ok = actual_verification == expected_verification
+            actual_target = (response.get("target_resolution") or {}).get("status")
+            target_ok = actual_target == expected.get("target_status", actual_target)
             usage = response.get("model_usage") or {}
             if isinstance(usage.get("total_tokens"), int): tokens.append(usage["total_tokens"])
             if isinstance(usage.get("estimated_cost_usd"), (int, float)): costs.append(float(usage["estimated_cost_usd"]))
@@ -142,15 +167,15 @@ def run(api_base_url: str, cases_path: Path, timeout_seconds: float, k: int) -> 
             else:
                 negative_cases += 1
                 safely_blocked_cases += int(actual_verification is False)
-            router_correct += int(route_ok); verifier_correct += int(verification_ok); tool_correct += int(tool_ok)
-            outcomes.append({"id": case["id"], "status": "ok", "latency_ms": round(latency_ms, 1), "route_ok": route_ok, "tools_ok": tool_ok, "verification_ok": verification_ok, "citation_count": len(citations), "factual_claim_count": case_claims, "supported_claim_count": case_supported, "claim_coverage": verification.get("claim_coverage"), "model_usage": usage})
+            router_correct += int(route_ok); verifier_correct += int(verification_ok); tool_correct += int(tool_ok); target_correct += int(target_ok)
+            outcomes.append({"id": case["id"], "status": "ok", "latency_ms": round(latency_ms, 1), "route_ok": route_ok, "tools_ok": tool_ok, "verification_ok": verification_ok, "target_ok": target_ok, "citation_count": len(citations), "factual_claim_count": case_claims, "supported_claim_count": case_supported, "claim_coverage": verification.get("claim_coverage"), "model_usage": usage})
             latencies.append(latency_ms)
         except (HTTPError, URLError, TimeoutError, ValueError) as error:
             latencies.append((time.perf_counter() - started) * 1000)
             outcomes.append({"id": case["id"], "status": "error", "error": type(error).__name__})
 
     total = len(cases)
-    return {
+    metrics = {
         "generated_at": datetime.now(UTC).isoformat(),
         "mode": "live_read_only_agentic_rag",
         "case_file": str(cases_path.relative_to(ROOT)),
@@ -165,6 +190,7 @@ def run(api_base_url: str, cases_path: Path, timeout_seconds: float, k: int) -> 
         "router_accuracy": round(router_correct / total, 3) if total else 0.0,
         "tool_selection_accuracy": round(tool_correct / total, 3) if total else 0.0,
         "verification_accuracy": round(verifier_correct / total, 3) if total else 0.0,
+        "target_resolution_accuracy": round(target_correct / total, 3) if total else 0.0,
         "verified_citation_coverage": round(cited_verified / expected_verified_cases, 3) if expected_verified_cases else None,
         "unsupported_claim_block_rate": round(safely_blocked_cases / negative_cases, 3) if negative_cases else None,
         "claim_support_coverage": round(supported_claims / factual_claims, 3) if factual_claims else None,
@@ -177,6 +203,21 @@ def run(api_base_url: str, cases_path: Path, timeout_seconds: float, k: int) -> 
         "estimated_cost_usd": round(sum(costs), 8) if costs else None,
         "outcomes": outcomes,
     }
+    thresholds = {
+        "at_least_20_reviewed_retrieval_cases": len(precisions) >= 20,
+        "all_cases_completed": metrics["completed_cases"] == total,
+        "precision_at_k_at_least_0_60": (metrics["precision_at_k"] or 0) >= 0.60,
+        "recall_at_k_at_least_0_90": (metrics["recall_at_k"] or 0) >= 0.90,
+        "mrr_at_k_at_least_0_80": (metrics["mrr_at_k"] or 0) >= 0.80,
+        "routing_exact": metrics["router_accuracy"] == 1.0,
+        "tools_exact": metrics["tool_selection_accuracy"] == 1.0,
+        "verification_exact": metrics["verification_accuracy"] == 1.0,
+        "target_resolution_exact": metrics["target_resolution_accuracy"] == 1.0,
+        "no_unsupported_claim_escape": metrics["unsupported_claim_escape_rate"] == 0.0,
+    }
+    metrics["professional_thresholds"] = thresholds
+    metrics["professional_validation_passed"] = all(thresholds.values())
+    return metrics
 
 
 if __name__ == "__main__":
@@ -190,12 +231,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.case_id:
         source = json.loads(args.cases.read_text(encoding="utf-8"))
-        selected = [case for case in source["cases"] if case["id"] in set(args.case_id)]
+        normalized = load_cases(source)
+        selected = [case for case in normalized if case["id"] in set(args.case_id)]
         if len(selected) != len(set(args.case_id)):
             raise SystemExit("One or more --case-id values do not exist in the case file")
         temporary_cases = ROOT / "evals" / "datasets" / ".live-agentic-rag-selected.json"
         # The selected manifest is intentionally ephemeral; it is never a report.
-        temporary_cases.write_text(json.dumps({**source, "cases": selected}), encoding="utf-8")
+        temporary_cases.write_text(json.dumps({"cases": selected}), encoding="utf-8")
         try:
             result = run(args.api_base_url, temporary_cases, args.timeout_seconds, args.k)
         finally:

@@ -144,7 +144,9 @@ class OpenAIChatCompletionProvider:
                                 "claim about DataHub must be a separate sentence ending with one or more exact "
                                 "evidence IDs such as [E1]. A citation supports only that sentence. Copy asset "
                                 "names, field names, types, counts and relationships exactly from the cited facts. "
-                                "If evidence is missing, say that it could not be verified. Never claim a write "
+                                "Do not infer business meaning from URN segments. Do not claim that metadata is "
+                                "absent unless the evidence explicitly reports that absence. If required evidence "
+                                "is missing, state only that the requested fact could not be verified. Never claim a write "
                                 "or agent action happened. Keep the response concise."
                             ),
                         },
@@ -198,6 +200,29 @@ def _deterministic_evidence_answer(evidence: list[AgentEvidence]) -> str:
     )
 
 
+def _deterministic_catalog_answer(evidence: list[AgentEvidence]) -> str:
+    """Render exact search records without asking a model to paraphrase them."""
+
+    return "\n".join(
+        f"- {item.summary.rstrip('.')}"
+        f", {', '.join(item.facts)} [{item.id}]."
+        for item in evidence
+        if item.kind == "search"
+    )
+
+
+def _deterministic_structured_answer(evidence: list[AgentEvidence]) -> str:
+    """Render schema/lineage facts exactly, with one evidence scope per claim."""
+
+    lines: list[str] = []
+    for item in evidence:
+        if item.kind not in {"schema", "lineage"}:
+            continue
+        lines.append(f"- {item.summary.rstrip('.')} [{item.id}].")
+        lines.extend(f"  - {fact} [{item.id}]." for fact in item.facts)
+    return "\n".join(lines)
+
+
 _CLAIM_CITATION = re.compile(r"\[([A-Za-z0-9_.:-]+)\]")
 _CLAIM_SPLIT = re.compile(r"(?<=[.!?])\s+|;\s+|\n+")
 _CLAIM_WORDS = re.compile(r"[A-Za-z0-9_.:-]+")
@@ -209,10 +234,16 @@ _NON_FACTUAL_PREFIXES = (
     "here is the verified datahub evidence",
 )
 _GENERIC_CLAIM_WORDS = {
-    "a", "about", "an", "and", "answer", "are", "as", "asset", "assets", "at", "be", "because",
-    "by", "datahub", "data", "direct", "evidence", "following", "for", "from", "has", "have",
-    "in", "includes", "is", "it", "live", "match", "metadata", "named", "of", "on", "or", "record",
-    "records", "result", "schema", "shows", "the", "this", "to", "uses", "verified", "was", "were", "with",
+    "a", "about", "additionally", "also", "an", "and", "answer", "are", "as", "asset", "assets", "at",
+    "available", "be", "because", "by", "datahub", "data", "direct", "evidence", "exists", "finally",
+    "following", "for", "from", "has", "have", "indicating", "in", "includes", "is", "it", "live", "match",
+    "another", "dataset", "datasets", "metadata", "multiple", "named", "of", "on", "or", "platform", "platforms",
+    "present", "record", "records", "result", "schema", "shows", "the", "there", "this", "to", "under", "uses",
+    "verified", "was", "were", "with",
+}
+_COUNT_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
 }
 
 
@@ -225,14 +256,22 @@ def _claim_units(answer: str) -> list[tuple[str, list[str]]]:
 
     units: list[tuple[str, list[str]]] = []
     for line in answer.splitlines() or [answer]:
-        line_ids = list(dict.fromkeys(_CLAIM_CITATION.findall(line)))
-        for fragment in _CLAIM_SPLIT.split(line):
+        # Models and tests may place citations immediately before or immediately
+        # after sentence punctuation. Canonicalize the latter so a citation never
+        # leaks into the following claim when the line contains many sentences.
+        normalized_line = re.sub(
+            r"([.!?])\s*((?:\[[A-Za-z0-9_.:-]+\]\s*)+)",
+            lambda match: f" {match.group(2).strip()}{match.group(1)} ",
+            line,
+        )
+        for fragment in _CLAIM_SPLIT.split(normalized_line):
+            fragment_ids = list(dict.fromkeys(_CLAIM_CITATION.findall(fragment)))
             text = _CLAIM_CITATION.sub("", fragment).strip(" -\t")
             if not text or not re.search(r"[A-Za-z]", text):
                 continue
             if text.lower().startswith(_NON_FACTUAL_PREFIXES):
                 continue
-            units.append((text, line_ids))
+            units.append((text, fragment_ids))
     return units
 
 
@@ -289,9 +328,20 @@ def _verify_factual_claims(
             corpus_tokens = _claim_tokens(corpus_text)
             claim_tokens = _claim_tokens(text)
             numeric_tokens = set(re.findall(r"\b\d+(?:\.\d+)?\b", text))
+            word_counts = {
+                number for word, number in _COUNT_WORDS.items()
+                if re.search(rf"\b{word}\b", text, re.IGNORECASE)
+            }
+            derived_search_counts = {
+                len({item.asset_urn for item in cited if item.kind == "search"})
+            }
+            unsupported_word_counts = {
+                number for number in word_counts
+                if str(number) not in corpus_text and number not in derived_search_counts
+            }
             missing_facts = sorted(
                 token for token in claim_tokens | numeric_tokens
-                if token not in corpus_tokens and token not in corpus_text
+                if token not in _COUNT_WORDS and token not in corpus_tokens and token not in corpus_text
             )
             negative_claim = bool(re.search(r"\b(no|not|none|without|aucun|aucune|pas de)\b", text, re.IGNORECASE))
             explicit_negative_fact = any(
@@ -299,13 +349,17 @@ def _verify_factual_claims(
                 for marker in ("returned no", "=none", "=unknown", "no direct relationship", "0 field", "0 direct")
             )
             overlap = claim_tokens & corpus_tokens
-            if negative_claim and not explicit_negative_fact:
+            substring_anchor = any(token in corpus_text for token in claim_tokens)
+            if unsupported_word_counts:
+                supported = False
+                reason = "The claimed count is not supported by the cited MCP evidence."
+            elif negative_claim and not explicit_negative_fact:
                 supported = False
                 reason = "An absence claim requires an explicit negative MCP fact."
             elif missing_facts:
                 supported = False
                 reason = f"The cited MCP facts do not contain: {', '.join(missing_facts)}."
-            elif not overlap:
+            elif not overlap and not substring_anchor:
                 supported = False
                 reason = "The claim has no factual anchor in the cited MCP record."
         results.append(
@@ -405,15 +459,19 @@ def _fallback_search_terms(question: str) -> str:
 
     stop_words = {
         "a", "about", "all", "and", "are", "asset", "assets", "catalog", "catalogue",
-        "called", "can", "column", "columns", "datahub", "dataset", "datasets", "depend",
-        "do", "downstream", "exist", "for", "from", "give", "in", "is", "its", "lineage", "on",
-        "list", "me", "metadata", "name", "named", "of", "please", "schema", "show", "tell", "the",
+        "called", "can", "column", "columns", "datahub", "dataset", "datasets", "dbt", "depend",
+        "do", "downstream", "exist", "field", "fields", "for", "from", "give", "in", "is", "its", "lineage", "on",
+        "every", "find", "get", "list", "looker", "me", "metadata", "name", "named", "of", "please",
+        "postgres", "postgresql", "powerbi", "s3", "schema", "show", "snowflake", "spark", "tableau", "tell", "the",
         "this", "to", "types", "upstream", "what", "which", "with",
         "actif", "actifs", "amont", "aval", "catalogue", "colonnes", "comment", "dans", "de",
         "des", "du", "donne", "est", "et", "les", "liste", "moi", "nom", "nomme", "pour",
         "quels", "quel", "recherche", "schema", "schéma", "toutes", "tous", "types", "un", "une",
     }
-    tokens = re.findall(r"[A-Za-z0-9_.:-]+", question)
+    tokens = [
+        token.strip(".:-")
+        for token in re.findall(r"[A-Za-z0-9_.:-]+", question)
+    ]
     meaningful = [token for token in tokens if token.lower() not in stop_words and len(token) > 1]
     return " ".join(meaningful[:8]) or "*"
 
@@ -430,14 +488,39 @@ def _search_terms_for_question(question: str, planned_terms: str, active_asset: 
     if urn_match:
         return urn_match.group(0)
     direct = re.search(
-        r"\b(?:of|from|about|de|du|des|sur)\s+(?:the\s+|le\s+|la\s+|les\s+)?(?:(?:snowflake|dbt|postgres(?:ql)?|s3|tableau|powerbi|looker|spark)\s+)?([A-Za-z0-9_.-]+)",
+        r"\b(?:of|from|about|for|de|du|des|sur)\s+(?:the\s+|le\s+|la\s+|les\s+)?(?:(?:snowflake|dbt|postgres(?:ql)?|s3|tableau|powerbi|looker|spark)\s+)?([A-Za-z0-9_.-]+)",
         question,
         re.IGNORECASE,
     )
     if direct:
-        return direct.group(1)
+        return direct.group(1).strip(".:-")
     extracted = _fallback_search_terms(question)
     return extracted if extracted != "*" else _fallback_search_terms(planned_terms)
+
+
+def _filter_general_matches(
+    question: str, search_terms: str, matches: list[RagCitation]
+) -> list[RagCitation]:
+    """Apply explicit user constraints before general catalog evidence is built."""
+
+    lowered = question.lower()
+    platform = next(
+        (name for name in _PLATFORMS if re.search(rf"\b{re.escape(name)}\b", lowered)),
+        None,
+    )
+    filtered = matches
+    if platform:
+        canonical = "postgres" if platform == "postgresql" else platform
+        filtered = [
+            item for item in filtered
+            if (item.platform_urn or "").lower().endswith(f":{canonical}")
+        ]
+    normalized_terms = search_terms.strip().lower()
+    if normalized_terms and normalized_terms != "*":
+        exact = [item for item in filtered if item.label.lower() == normalized_terms]
+        if exact:
+            filtered = exact
+    return _dedupe_citations(filtered)
 
 
 def _resolve_target(
@@ -445,6 +528,7 @@ def _resolve_target(
     candidates: list[RagCitation],
     active_asset: RagCitation | None,
     required: bool,
+    preferred_urns: set[str] | None = None,
 ) -> ChatTargetResolution:
     if not required:
         return ChatTargetResolution(status="NOT_REQUIRED", detail="A target-specific DataHub read is not required for this question.")
@@ -476,11 +560,22 @@ def _resolve_target(
     asset_term = _search_terms_for_question(question, "", None).lower()
     if asset_term and asset_term != "*":
         exact = [item for item in filtered if item.label.lower() == asset_term]
-        named = exact or [item for item in filtered if asset_term in item.label.lower()]
+        if len(exact) == 1:
+            filtered = exact
+        elif len(exact) > 1:
+            # Multiple exact live assets remain ambiguous. Vector rank must
+            # never silently choose a platform for the user.
+            filtered = exact
+        else:
+            named = [item for item in filtered if asset_term in item.label.lower()]
+            preferred = [
+                item for item in (named or filtered)
+                if preferred_urns and item.urn in preferred_urns
+            ]
+            filtered = preferred or named
         # Never fall back to unrelated fuzzy DataHub search results. For a
         # target-specific read, an asset name that did not match a live label
         # is a safe NOT_FOUND, not an invitation to choose arbitrary assets.
-        filtered = named
     unique = _dedupe_citations(filtered)
     if len(unique) == 1:
         return ChatTargetResolution(status="RESOLVED", detail=f"Resolved DataHub target: {unique[0].urn}", targets=unique)
@@ -491,6 +586,102 @@ def _resolve_target(
         status="AMBIGUOUS",
         detail=f"Multiple verified DataHub assets match this request: {choices}. Please choose a platform or provide a full URN before schema or lineage is read.",
         targets=unique,
+    )
+
+
+def _qdrant_candidate_can_guide(
+    search_terms: str, candidate: RagCitation, minimum_score: float
+) -> bool:
+    """Reject weak or identifier-mismatched vector hits before any live probe."""
+
+    if candidate.score is None or candidate.score < minimum_score:
+        return False
+    normalized = search_terms.strip().casefold()
+    if not normalized or normalized == "*":
+        return False
+    # High-entropy identifiers are exact lookup requests, not semantic aliases.
+    if re.fullmatch(r"[a-z0-9_.:-]+", normalized) and any(
+        marker in normalized for marker in ("_", ".", ":")
+    ):
+        haystack = f"{candidate.label} {candidate.urn}".casefold()
+        if normalized not in haystack:
+            return False
+    return True
+
+
+def _has_exact_live_target(question: str, candidates: list[RagCitation]) -> bool:
+    """Avoid extra vector-guided MCP work when live search already proves one target."""
+
+    urn_match = re.search(r"urn:li:[^\s`]+", question)
+    if urn_match:
+        return sum(item.urn == urn_match.group(0) for item in candidates) == 1
+    platform = next(
+        (name for name in _PLATFORMS if re.search(rf"\b{re.escape(name)}\b", question, re.IGNORECASE)),
+        None,
+    )
+    filtered = candidates
+    if platform:
+        canonical = "postgres" if platform == "postgresql" else platform
+        filtered = [
+            item for item in filtered
+            if (item.platform_urn or "").lower().endswith(f":{canonical}")
+        ]
+    term = _search_terms_for_question(question, "", None).casefold()
+    return bool(term and term != "*") and sum(
+        item.label.casefold() == term for item in filtered
+    ) == 1
+
+
+def _qdrant_preferred_urns(
+    candidates: list[RagCitation], minimum_margin: float
+) -> set[str]:
+    """Prefer one confirmed semantic candidate only when its lead is explicit."""
+
+    ranked = sorted(
+        candidates,
+        key=lambda item: item.score if item.score is not None else -1.0,
+        reverse=True,
+    )
+    if not ranked:
+        return set()
+    if len(ranked) == 1:
+        return {ranked[0].urn}
+    top = ranked[0].score if ranked[0].score is not None else -1.0
+    second = ranked[1].score if ranked[1].score is not None else -1.0
+    if top - second >= minimum_margin:
+        return {ranked[0].urn}
+    return {item.urn for item in ranked}
+
+
+def _dataset_candidate(candidate: RagCitation) -> RagCitation | None:
+    """Project a schema-field hit to its explicit parent dataset URN."""
+
+    if candidate.entity_type.upper() == "DATASET":
+        return candidate
+    marker = "urn:li:schemaField:("
+    if candidate.entity_type.upper() != "SCHEMAFIELD" or not candidate.urn.startswith(marker):
+        return None
+    nested = candidate.urn[len(marker) : -1] if candidate.urn.endswith(")") else ""
+    if "," not in nested:
+        return None
+    dataset_urn = nested.rsplit(",", 1)[0]
+    dataset_marker = "urn:li:dataset:("
+    if not dataset_urn.startswith(dataset_marker) or not dataset_urn.endswith(")"):
+        return None
+    identity = dataset_urn[len(dataset_marker) : -1]
+    if "," not in identity:
+        return None
+    name_and_environment = identity.split(",", 1)[1]
+    if "," not in name_and_environment:
+        return None
+    label = name_and_environment.rsplit(",", 1)[0]
+    return RagCitation(
+        urn=dataset_urn,
+        label=label,
+        entity_type="DATASET",
+        platform_urn=candidate.platform_urn,
+        source="qdrant_schemafield_parent",
+        score=candidate.score,
     )
 
 
@@ -685,11 +876,47 @@ class HybridChatAgent:
         matches = _citations_from_graph(graph.nodes)
         requires_target = plan.need_schema or plan.need_lineage or state["action_proposal"].action == ChatActionType.ANALYZE_IMPACT
         prior_resolution = state.get("target_resolution")
-        resolution = prior_resolution if prior_resolution and prior_resolution.status == "RESOLVED" else _resolve_target(
-            state["request"].message, matches, state.get("active_asset"), requires_target
+        confirmed_qdrant: list[RagCitation] = []
+        # A repair round must keep its original target lock. Before the lock,
+        # Qdrant may suggest bounded candidate labels, but only an exact URN
+        # rediscovered by live DataHub MCP is admitted as evidence.
+        should_confirm_qdrant = (
+            not (prior_resolution and prior_resolution.status == "RESOLVED")
+            and (
+                not matches
+                or (requires_target and not _has_exact_live_target(state["request"].message, matches))
+            )
         )
-        targets = resolution.targets if resolution.status == "RESOLVED" else []
-        verified = targets if requires_target else matches
+        if should_confirm_qdrant:
+            confirmed_qdrant = await self._confirm_qdrant_candidates(
+                plan.search_terms,
+                state.get("retrieved", []),
+                (
+                    {"DATASET"}
+                    if plan.need_schema
+                    or state["action_proposal"].action == ChatActionType.ANALYZE_IMPACT
+                    else None
+                ),
+            )
+            matches = _dedupe_citations([*matches, *confirmed_qdrant])
+        if not requires_target:
+            matches = _filter_general_matches(
+                state["request"].message, plan.search_terms, matches
+            )
+        resolution = prior_resolution if prior_resolution and prior_resolution.status == "RESOLVED" else _resolve_target(
+            state["request"].message,
+            matches,
+            state.get("active_asset"),
+            requires_target,
+            _qdrant_preferred_urns(
+                confirmed_qdrant,
+                self._settings.rag_mcp_confirmation_min_margin,
+            ),
+        )
+        # Never alias the target lock with the expanding citation list. Lineage
+        # descendants are citations, not new targets for a repair round.
+        targets = list(resolution.targets) if resolution.status == "RESOLVED" else []
+        verified = list(targets) if requires_target else list(matches)
         evidence = _search_evidence(verified)
         tools = ["search"]
         if plan.need_schema and targets:
@@ -743,11 +970,91 @@ class HybridChatAgent:
                     "mcp_tools",
                     "MCP tool manager",
                     "COMPLETED",
-                    f"Ran allowlisted tools: {', '.join(tools)}; live matches: {len(verified)}; evidence records: {len(evidence)}.",
+                    f"Ran allowlisted tools: {', '.join(tools)}; live matches: {len(verified)}; "
+                    f"Qdrant-guided exact MCP confirmations: {len(confirmed_qdrant)}; evidence records: {len(evidence)}.",
                 ),
                 _trace("target", "Asset target resolver", resolution.status, resolution.detail),
             ],
         }
+
+    async def _confirm_qdrant_candidates(
+        self,
+        search_terms: str,
+        retrieved: list[RagCitation],
+        allowed_entity_types: set[str] | None = None,
+    ) -> list[RagCitation]:
+        """Use vector retrieval only to choose bounded live MCP confirmation queries."""
+
+        candidates: list[RagCitation] = []
+        seen: set[str] = set()
+        for raw_candidate in retrieved:
+            candidate = (
+                _dataset_candidate(raw_candidate)
+                if allowed_entity_types == {"DATASET"}
+                else raw_candidate
+            )
+            if candidate is None:
+                continue
+            if (
+                candidate.urn in seen
+                or (
+                    allowed_entity_types is not None
+                    and candidate.entity_type.upper() not in allowed_entity_types
+                )
+                or not _qdrant_candidate_can_guide(
+                search_terms,
+                candidate,
+                self._settings.rag_mcp_confirmation_min_score,
+                )
+            ):
+                continue
+            seen.add(candidate.urn)
+            candidates.append(candidate)
+            if len(candidates) >= self._settings.rag_mcp_confirmation_candidates:
+                break
+        if not candidates:
+            return []
+
+        requests = [(candidate.label, 10, 0) for candidate in candidates]
+        search_many = getattr(self._datahub, "search_many", None)
+        try:
+            if callable(search_many):
+                responses = await asyncio.wait_for(
+                    search_many(requests),
+                    timeout=self._settings.chat_timeout_seconds,
+                )
+            else:
+                responses = []
+                for label, count, offset in requests:
+                    responses.append(
+                        await asyncio.wait_for(
+                            self._datahub.search(label, count, offset),
+                            timeout=self._settings.chat_timeout_seconds,
+                        )
+                    )
+        except (TimeoutError, asyncio.TimeoutError):
+            return []
+        except Exception:
+            # The vector path is optional. A failed candidate confirmation must
+            # not take down the already-successful primary live MCP search.
+            return []
+
+        confirmed: list[RagCitation] = []
+        for candidate, response in zip(candidates, responses, strict=False):
+            live = _citations_from_graph(
+                catalog_from_search(response, candidate.label).nodes
+            )
+            exact = next((item for item in live if item.urn == candidate.urn), None)
+            if exact is not None:
+                confirmed.append(
+                    exact.model_copy(
+                        update={
+                            "source": "datahub_mcp_live_qdrant_guided",
+                            "score": candidate.score,
+                        }
+                    )
+                )
+        return confirmed
 
     async def _reason(self, state: AgenticChatState) -> dict[str, object]:
         resolution = state.get("target_resolution")
@@ -759,10 +1066,57 @@ class HybridChatAgent:
             }
         sources = (
             _dedupe_citations(state["verified"])[: state["request"].max_sources]
-            if resolution and resolution.status == "RESOLVED"
-            else _merge_sources(state["retrieved"], state["verified"], state["request"].max_sources)
+            if state.get("verified")
+            else _dedupe_citations(state["retrieved"])[: state["request"].max_sources]
         )
-        answer = await self._completion.answer(state["request"].message, sources, state.get("evidence", []))
+        answer_question = state["request"].message
+        previous_verification = state.get("verification")
+        evidence = state.get("evidence", [])
+        catalog_only = (
+            not state["plan"].need_schema
+            and not state["plan"].need_lineage
+            and bool(evidence)
+            and all(item.kind == "search" for item in evidence)
+            and _propose_action(state["request"].message).action == ChatActionType.NONE
+        )
+        if catalog_only:
+            return {
+                "sources": sources,
+                "answer": _deterministic_catalog_answer(evidence),
+                "trace": [
+                    *state["trace"],
+                    _trace(
+                        "reasoning",
+                        "Reasoning agent",
+                        "COMPLETED",
+                        "deterministic_catalog: rendered exact MCP records without paraphrasing.",
+                    ),
+                ],
+            }
+        structured_evidence = [
+            item for item in evidence if item.kind in {"schema", "lineage"}
+        ]
+        if structured_evidence:
+            return {
+                "sources": sources,
+                "answer": _deterministic_structured_answer(structured_evidence),
+                "trace": [
+                    *state["trace"],
+                    _trace(
+                        "reasoning",
+                        "Reasoning agent",
+                        "COMPLETED",
+                        "deterministic_structured: rendered exact MCP schema/lineage facts.",
+                    ),
+                ],
+            }
+        if previous_verification and previous_verification.issues:
+            repair_feedback = " ".join(previous_verification.issues[:6])
+            answer_question = (
+                f"{answer_question}\n\nPublic verifier feedback for this bounded repair: "
+                f"{repair_feedback} Rewrite only the unsupported sentences; do not add new facts."
+            )
+        answer = await self._completion.answer(answer_question, sources, evidence)
         completion_mode = getattr(self._completion, "last_mode", "custom")
         return {
             "sources": sources,
@@ -891,16 +1245,33 @@ def _citations_from_graph(nodes: Any) -> list[RagCitation]:
 
 
 def _search_evidence(nodes: Any) -> list[AgentEvidence]:
-    return [
-        AgentEvidence(
-            id=f"E{index}",
-            kind="search",
-            asset_urn=node.urn,
-            summary=f"DataHub search matched {node.label} ({node.entity_type}).",
-            facts=[f"asset={node.label}", f"entity_type={node.entity_type}", f"urn={node.urn}"],
+    evidence: list[AgentEvidence] = []
+    for index, node in enumerate(nodes, start=1):
+        facts = [
+            f"asset={node.label}",
+            f"entity_type={node.entity_type}",
+            f"urn={node.urn}",
+        ]
+        if node.platform_urn:
+            facts.append(f"platform={node.platform_urn.rsplit(':', 1)[-1]}")
+        environment = _dataset_environment(node.urn)
+        if environment:
+            facts.append(f"environment={environment}")
+        evidence.append(
+            AgentEvidence(
+                id=f"E{index}",
+                kind="search",
+                asset_urn=node.urn,
+                summary=f"DataHub search matched {node.label} ({node.entity_type}).",
+                facts=facts,
+            )
         )
-        for index, node in enumerate(nodes, start=1)
-    ]
+    return evidence
+
+
+def _dataset_environment(urn: str) -> str | None:
+    match = re.search(r",([^,()]+)\)$", urn)
+    return match.group(1) if match else None
 
 
 def _schema_evidence(target: RagCitation, result: dict[str, Any]) -> AgentEvidence:
@@ -944,13 +1315,6 @@ def _dedupe_citations(citations: list[RagCitation]) -> list[RagCitation]:
 
 def _dedupe_evidence(evidence: list[AgentEvidence]) -> list[AgentEvidence]:
     return list({item.id: item for item in evidence}.values())
-
-
-def _merge_sources(primary: list[RagCitation], verified: list[RagCitation], limit: int) -> list[RagCitation]:
-    merged: dict[str, RagCitation] = {source.urn: source for source in verified}
-    for source in primary:
-        merged.setdefault(source.urn, source)
-    return list(merged.values())[:limit]
 
 
 def _propose_action(message: str) -> ChatActionProposal:

@@ -1,5 +1,6 @@
 param(
-    [switch]$SkipDatapack
+    [switch]$SkipDatapack,
+    [switch]$RefreshCompose
 )
 
 $ErrorActionPreference = 'Stop'
@@ -8,11 +9,13 @@ $quickstartDirectory = Join-Path $env:USERPROFILE '.datahub\quickstart'
 $quickstartCompose = Join-Path $quickstartDirectory 'docker-compose.yml'
 New-Item -ItemType Directory -Force -Path $quickstartDirectory | Out-Null
 
-# PowerShell uses the Windows certificate store. This keeps TLS verification enabled
-# on corporate networks where Python's bundled CA store does not include the proxy CA.
-Invoke-WebRequest `
-    -Uri 'https://raw.githubusercontent.com/datahub-project/datahub/v1.6.0/docker/quickstart/docker-compose.quickstart-profile.yml' `
-    -OutFile $quickstartCompose
+if ($RefreshCompose -or -not (Test-Path $quickstartCompose)) {
+    # PowerShell uses the Windows certificate store. This keeps TLS verification enabled
+    # on corporate networks where Python's bundled CA store does not include the proxy CA.
+    Invoke-WebRequest `
+        -Uri 'https://raw.githubusercontent.com/datahub-project/datahub/v1.6.0/docker/quickstart/docker-compose.quickstart-profile.yml' `
+        -OutFile $quickstartCompose
+}
 
 $localSecrets = Join-Path $quickstartDirectory '.local-secrets.env'
 if (-not (Test-Path $localSecrets)) {
@@ -43,7 +46,6 @@ Get-Content $localSecrets | ForEach-Object {
 
 $env:DATAHUB_VERSION = 'v1.6.0'
 $env:UI_INGESTION_DEFAULT_CLI_VERSION = '1.6.0.15'
-$env:HOME = $env:USERPROFILE
 
 & docker compose -f $quickstartCompose -p datahub --profile quickstart up -d --wait
 if ($LASTEXITCODE -ne 0) {

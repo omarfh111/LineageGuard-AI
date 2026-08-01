@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ChangeType(StrEnum):
@@ -59,6 +59,13 @@ class ChangeRequest(BaseModel):
     column_nullable: bool | None = None
     type_change_compatible: bool | None = None
 
+    @field_validator("column_name", "new_value", mode="before")
+    @classmethod
+    def normalize_change_value(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.strip()
+        return value
+
     @model_validator(mode="after")
     def validate_change_details(self) -> "ChangeRequest":
         if not self.column_name:
@@ -68,6 +75,12 @@ class ChangeRequest(BaseModel):
             ChangeType.CHANGE_COLUMN_TYPE,
         } and not self.new_value:
             raise ValueError("new_value is required for rename and type changes")
+        if (
+            self.change_type is ChangeType.RENAME_COLUMN
+            and self.new_value
+            and self.column_name.casefold() == self.new_value.casefold()
+        ):
+            raise ValueError("A rename target must differ from the current column name")
         return self
 
 

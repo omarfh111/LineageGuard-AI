@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 from app.core.config import Settings, get_settings
 from app.domain.contracts import (
     AggregateDecision,
+    ChangeType,
     ClaimType,
     DeterministicValidation,
     JudgeAggregation,
@@ -32,6 +33,12 @@ from app.services.impact_analysis import (
 from app.services.remediation_planner import DeterministicRemediationPlanner
 
 logger = logging.getLogger(__name__)
+
+
+def _normalized_data_type(value: str) -> str:
+    """Compare type spellings without treating whitespace or case as a change."""
+
+    return "".join(value.split()).casefold()
 
 
 class Judge(Protocol):
@@ -225,12 +232,21 @@ def validate_gate_zero(request: JudgingRequest) -> DeterministicValidation:
                 continue
             referenced_impact_evidence.add(evidence_id)
             raw = item.raw_reference
+            raw_path = raw.get("lineage_path")
+            raw_degree = raw.get("degree")
+            expected_tool = (
+                "get_lineage_paths_between"
+                if len(impact.lineage_path) > 2
+                else "get_lineage"
+            )
             if (
-                item.tool != "get_lineage"
+                item.tool != expected_tool
                 or item.claim_type is not ClaimType.DOWNSTREAM_DEPENDENCY
                 or item.asset_urn != impact.asset_urn
                 or raw.get("source_asset_urn") != report.request.asset_urn
                 or raw.get("downstream_asset_urn") != impact.asset_urn
+                or raw_path != impact.lineage_path
+                or raw_degree != len(impact.lineage_path) - 1
                 or raw.get("owner_urns") != impact.owner_urns
                 or raw.get("platform_urn") != impact.platform_urn
                 or raw.get("criticality") != str(impact.criticality)
@@ -255,6 +271,7 @@ def validate_gate_zero(request: JudgingRequest) -> DeterministicValidation:
 
     schema_evidence = evidence_by_id.get("ev_schema_source")
     field_names: list[object] = []
+    field_types: dict[str, str] = {}
     if (
         schema_evidence is None
         or schema_evidence.asset_urn != report.request.asset_urn
@@ -271,10 +288,39 @@ def validate_gate_zero(request: JudgingRequest) -> DeterministicValidation:
             errors.append("Source schema evidence contains invalid field names")
         else:
             field_names = candidate_fields
+        candidate_types = schema_evidence.raw_reference.get("field_types", {})
+        if not isinstance(candidate_types, dict) or any(
+            not isinstance(name, str) or not isinstance(data_type, str)
+            for name, data_type in candidate_types.items()
+        ):
+            errors.append("Source schema evidence contains invalid field types")
+        else:
+            field_types = candidate_types
 
-    if report.request.change_type.value != "ADD_COLUMN":
-        if report.request.column_name not in field_names:
-            errors.append("Requested column is not supported by schema evidence")
+    normalized_fields = {
+        field.casefold(): field for field in field_names if isinstance(field, str)
+    }
+    column_key = (report.request.column_name or "").casefold()
+    if report.request.change_type is ChangeType.ADD_COLUMN:
+        if column_key in normalized_fields:
+            errors.append("ADD_COLUMN duplicates an existing schema field")
+    elif column_key not in normalized_fields:
+        errors.append("Requested column is not supported by schema evidence")
+    elif report.request.change_type is ChangeType.RENAME_COLUMN:
+        target_key = (report.request.new_value or "").casefold()
+        if target_key == column_key:
+            errors.append("Rename target is identical to the source column")
+        elif target_key in normalized_fields:
+            errors.append("Rename target collides with an existing schema field")
+    elif report.request.change_type is ChangeType.CHANGE_COLUMN_TYPE:
+        canonical_name = normalized_fields[column_key]
+        current_type = field_types.get(canonical_name)
+        if not current_type:
+            errors.append("Current column type is not supported by schema evidence")
+        elif _normalized_data_type(current_type) == _normalized_data_type(
+            report.request.new_value or ""
+        ):
+            errors.append("Requested type is identical to the current schema type")
 
     lineage_summary = evidence_by_id.get("ev_lineage_summary")
     total_downstreams = len(report.impacted_assets)
