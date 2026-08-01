@@ -92,8 +92,9 @@ describe("verified chat handoff", () => {
         resolution: { status: "RESOLVED", targets: [target] },
         handoffId: "handoff-123456789",
         expiresAt: "2030-01-01T00:00:00Z",
+        changeType: "DROP_COLUMN",
       }),
-    ).toMatchObject({ target });
+    ).toMatchObject({ target, changeType: "DROP_COLUMN" });
   });
 
   it("rejects ambiguous or tokenless handoffs", () => {

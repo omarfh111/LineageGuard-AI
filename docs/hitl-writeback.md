@@ -2,6 +2,11 @@
 
 Write-back is disabled by default. Set `DATAHUB_WRITEBACK_ENABLED=true` only
 for a reviewed operation in a disposable or controlled DataHub environment.
+Every state-changing write-back endpoint also requires the local
+`X-LineageGuard-Reviewer-Capability` header to match a server-side
+`LOCAL_REVIEWER_CAPABILITY` of at least 24 characters. The UI keeps this value
+only in React memory for the current tab; it is never placed in local storage,
+returned by the API, or bundled through a `VITE_*` variable.
 LineageGuard's sole mutation is `save_document` for one DataHub Analysis
 document related to the analyzed asset. It cannot alter schemas, lineage,
 datasets, dashboards, warehouse rows, or dbt jobs.
@@ -9,6 +14,8 @@ datasets, dashboards, warehouse rows, or dbt jobs.
 ## Security invariants
 
 - Gate 0 and both independent judges must PASS before proposal preparation.
+- Disabled write-back, a missing/weak server capability, and a missing/wrong
+  reviewer header fail closed with `503`, `503`, and `403` respectively.
 - `APPROVE_REPORT` and `APPROVE_ROLLBACK` are separate human decisions.
 - The browser generates and retains the idempotency key; API responses never
   disclose it.
@@ -68,8 +75,9 @@ stateDiagram-v2
 
 ## API sequence
 
-1. `POST /api/v1/writebacks/prepare` with a server-owned judging `run_id` and
-   browser-held idempotency key.
+1. Enter the local reviewer capability in the UI, then call
+   `POST /api/v1/writebacks/prepare` with its header, a server-owned judging
+   `run_id`, and browser-held idempotency key.
 2. Review `GET /api/v1/writebacks/{run_id}` and its immutable report snapshot.
 3. Review `GET /api/v1/writebacks/{run_id}/audit`.
 4. Send `APPROVE_REPORT`, `REQUEST_REVISION`, or `REJECT` to
@@ -78,6 +86,12 @@ stateDiagram-v2
    `POST /api/v1/writebacks/{run_id}/reconcile`.
 6. A completed document can be compensated only through
    `POST /api/v1/writebacks/{run_id}/rollback` with `APPROVE_ROLLBACK`.
+
+The capability header is mandatory on all four POST routes: `prepare`,
+`approve`, `rollback`, and `reconcile`. The two GET inspection routes remain
+read-only. If the feature flag is turned off after a proposal was created, all
+subsequent POST transitions stop cleanly; no local state transition or remote
+mutation is attempted.
 
 `WRITEBACK_STALE_SECONDS` defaults to `300` and has a minimum of 30 seconds.
 It controls only when abandoned local in-flight work becomes uncertain. It

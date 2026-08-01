@@ -574,6 +574,7 @@ class ChatActionType(StrEnum):
 
 class ChatActionProposal(BaseModel):
     action: ChatActionType = ChatActionType.NONE
+    change_type: ChangeType | None = None
     requires_confirmation: bool = False
     reason: str
     required_fields: list[str] = Field(default_factory=list)

@@ -40,7 +40,7 @@ flowchart LR
     Aggregate -->|"double threshold PASS"| Proposal["Prepare HITL proposal"]
     Aggregate -->|"otherwise"| Review["Repair or human review"]
     Proposal --> Human{"Human decision"}
-    Human -->|"approve + enabled"| Save["DataHub Analysis document only"]
+    Human -->|"approve + enabled + local capability"| Save["DataHub Analysis document only"]
     Human -->|"reject / revise"| Audit["Persist audit event"]
 ```
 
@@ -83,7 +83,8 @@ sequenceDiagram
 | DataHub | The authoritative metadata graph | Application credentials or LineageGuard approval records |
 | Qdrant | URN, label, type, platform URN, owners | Table rows, SQL, raw GraphQL payloads, credentials, model prompts |
 | SQLite | Workflow state, audit, proposal/snapshot, local conversation memory | Provider secrets, DataHub token, private chain-of-thought |
-| Browser local storage | Random anonymous chat session identifier | Memory content, DataHub token, provider keys |
+| Browser local storage | Random anonymous chat session identifier | Memory content, reviewer capability, DataHub token, provider keys |
+| Browser tab memory | Local reviewer capability while the tab remains open | Provider keys, DataHub token, persisted reviewer secret |
 | LangSmith, if enabled | Trace hierarchy and configured run telemetry | Keys; public evidence must be reviewed before export |
 
 ## Agent responsibilities and invariants
@@ -96,7 +97,13 @@ sequenceDiagram
 | MCP tool manager | Locked target and plan | Read-only evidence records | Retries retain the same target; unknown assets never trigger unrelated schema or lineage reads |
 | Reasoning agent | Candidate sources and named evidence | Draft answer | Every DataHub assertion is independently cited; Qdrant is context, never proof |
 | Verification agent | Draft answer, evidence, target | Per-claim support decisions, verified response, or safe limitation | Every claim needs a live MCP factual anchor; evidence must belong to the resolved target URN |
-| Action router | User intent | `NONE`, `ANALYZE_IMPACT`, or `HITL_WRITEBACK` | The chat cannot perform a mutation |
+| Action router | User intent | `NONE`, typed `ANALYZE_IMPACT`, or `HITL_WRITEBACK` | All four schema changes are explicit; conflicting intents are never guessed; the chat cannot perform a mutation |
+
+Conversation memory is bounded by count, characters, and TTL. Expiration
+removes both the stored turns and the separately verified active asset in one
+purge transaction. Clearing memory also revokes the session's outstanding
+chat-to-analysis handoff. CORS permits `DELETE` and the reviewer header only
+from the configured local frontend origin.
 
 ## 3D catalog cache lifecycle
 

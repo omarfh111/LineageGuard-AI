@@ -48,6 +48,7 @@ Example non-secret shape:
 ```env
 DATAHUB_GMS_URL=http://host.docker.internal:8080
 DATAHUB_WRITEBACK_ENABLED=false
+LOCAL_REVIEWER_CAPABILITY=
 
 OPENAI_CHAT_MODEL=gpt-4.1-mini
 OPENAI_JUDGE_MODEL=gpt-4.1-mini
@@ -107,6 +108,13 @@ Do not expect the **Load 50 more assets** control when the cache already holds e
    changed request restarts from analysis.
 10. If external keys are intentionally enabled, run NVIDIA then the independent judges. Explain that `NEEDS_REPAIR`, `AWAITING_HUMAN`, and `BLOCKED` are safety outcomes, not application failures.
 11. Keep write-back disabled unless running the dedicated disposable write proof.
+
+For an explicitly authorized write proof only, generate a random 32-character
+or longer capability, set it as `LOCAL_REVIEWER_CAPABILITY`, enable write-back,
+and rebuild the backend. Enter that same capability in the password field shown
+after a double PASS. Never use a `VITE_*` variable for this secret and never
+commit it. `/api/v1/health` reports only `disabled`,
+`reviewer_unconfigured`, or `ready`.
 
 ## 7. Tracing and operational observability
 

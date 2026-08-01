@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.config import Settings
-from app.domain.contracts import AgentEvidence, ChatActionType, ChatRequest, RagCitation
+from app.domain.contracts import AgentEvidence, ChatActionType, ChangeType, ChatRequest, RagCitation
 from app.services.chat_agent import (
     HybridChatAgent,
     KeywordPlanningProvider,
@@ -393,6 +393,60 @@ def test_chat_proposes_read_only_analysis_for_schema_change() -> None:
     assert proposal.action == ChatActionType.ANALYZE_IMPACT
     assert proposal.requires_confirmation
     assert "asset_urn" in proposal.required_fields
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Add a customer_tier column to orders", ChangeType.ADD_COLUMN),
+        ("Rename the customer_status column", ChangeType.RENAME_COLUMN),
+        ("Change the customer_id column data type to BIGINT", ChangeType.CHANGE_COLUMN_TYPE),
+        ("Drop the customer_status column", ChangeType.DROP_COLUMN),
+    ],
+)
+def test_chat_routes_all_four_schema_changes(message: str, expected: ChangeType) -> None:
+    proposal = _propose_action(message)
+
+    assert proposal.action == ChatActionType.ANALYZE_IMPACT
+    assert proposal.change_type == expected
+    assert proposal.requires_confirmation
+
+
+def test_chat_does_not_guess_when_change_intents_conflict() -> None:
+    proposal = _propose_action("Rename the old column and drop the obsolete column")
+
+    assert proposal.action == ChatActionType.ANALYZE_IMPACT
+    assert proposal.change_type is None
+    assert "select one" in proposal.reason.lower()
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Add loyalty_tier to the dbt orders dataset", "orders"),
+        ("Rename customer_status to order_status in the dbt orders dataset", "orders"),
+        ("Change customer_id to BIGINT in the dbt orders dataset", "orders"),
+        ("Drop customer_status from the dbt orders dataset", "orders"),
+    ],
+)
+def test_schema_change_search_targets_the_asset_not_column_values(
+    message: str, expected: str
+) -> None:
+    assert _search_terms_for_question(message, "unsafe model terms", None) == expected
+
+
+def test_datahub_document_mutation_is_not_misclassified_as_schema_change() -> None:
+    proposal = _propose_action("Delete the DataHub documentation for orders")
+
+    assert proposal.action == ChatActionType.HITL_WRITEBACK
+    assert proposal.change_type is None
+
+
+def test_datahub_name_does_not_hide_an_explicit_add_column_intent() -> None:
+    proposal = _propose_action("Create a customer_tier column in the DataHub orders dataset")
+
+    assert proposal.action == ChatActionType.ANALYZE_IMPACT
+    assert proposal.change_type == ChangeType.ADD_COLUMN
 
 
 def test_chat_never_proposes_a_direct_write() -> None:

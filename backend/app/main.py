@@ -44,8 +44,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=[],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-LineageGuard-Reviewer-Capability"],
 )
 
 app.include_router(health_router, prefix="/api/v1")

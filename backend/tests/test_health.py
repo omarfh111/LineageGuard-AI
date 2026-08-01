@@ -18,5 +18,6 @@ def test_health_reports_runtime_configuration_without_secrets(monkeypatch) -> No
         "datahub": "configured",
         "llm_providers": "partial",
         "qdrant": "configured",
+        "writeback": "disabled",
         "demo_mode": True,
     }

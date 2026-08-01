@@ -26,6 +26,7 @@ class HealthResponse(BaseModel):
     datahub: Literal["configured", "not_configured"]
     llm_providers: Literal["configured", "partial", "not_configured"]
     qdrant: Literal["configured", "not_configured"]
+    writeback: Literal["disabled", "reviewer_unconfigured", "ready"]
     demo_mode: bool
 
 
@@ -47,6 +48,13 @@ def read_health() -> HealthResponse:
         llm_state = "partial"
     else:
         llm_state = "not_configured"
+    writeback_state: Literal["disabled", "reviewer_unconfigured", "ready"]
+    if not settings.datahub_writeback_enabled:
+        writeback_state = "disabled"
+    elif not settings.local_reviewer_capability or len(settings.local_reviewer_capability) < 24:
+        writeback_state = "reviewer_unconfigured"
+    else:
+        writeback_state = "ready"
     return HealthResponse(
         status="ok",
         service="lineageguard-api",
@@ -54,5 +62,6 @@ def read_health() -> HealthResponse:
         datahub="configured" if settings.datahub_gms_url else "not_configured",
         llm_providers=llm_state,
         qdrant="configured" if settings.qdrant_url else "not_configured",
+        writeback=writeback_state,
         demo_mode=settings.demo_mode,
     )

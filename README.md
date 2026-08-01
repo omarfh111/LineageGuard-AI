@@ -9,6 +9,8 @@ The application never changes a warehouse schema, dbt model, lineage edge, dashb
 ## What it does
 
 - Builds a read-only, evidence-backed impact report for `ADD_COLUMN`, `RENAME_COLUMN`, `CHANGE_COLUMN_TYPE`, and `DROP_COLUMN` requests.
+- Routes those same four chat intents into a typed, MCP-locked analysis handoff;
+  conflicting change intents require human selection instead of being guessed.
 - Carries a chat-resolved asset through a short-lived, server-owned handoff;
   asset substitution, expired handoffs, and cross-session reuse are rejected.
 - Invalidates stale reports whenever the change form is edited and turns
@@ -79,8 +81,8 @@ The public trace explains actions, tool choices, target resolution, and verifica
 |---|---|---|
 | DataHub MCP | Live source of truth | Fixed read-only allowlist: search, entities, schema, lineage, lineage paths, and dataset queries |
 | Qdrant | Retrieval candidate store | URN, label, entity type, platform, and owners only; never table rows, SQL, tokens, or raw GraphQL payloads |
-| Conversation memory | Local context only | At most six final turns by default; user-clearable; never evidence or tool authority |
-| Chat action router | Proposal only | `NONE`, `ANALYZE_IMPACT`, or `HITL_WRITEBACK`; the chat itself has no write tool |
+| Conversation memory | Local context only | At most six final turns by default; TTL expires turns and verified active asset together; user-clearable; never evidence or tool authority |
+| Chat action router | Proposal only | `NONE`, typed `ANALYZE_IMPACT`, or `HITL_WRITEBACK`; the chat itself has no write tool |
 | NVIDIA / OpenAI / Groq | Optional external services | Receive a bounded, redacted workflow dossier only when their buttons are explicitly used |
 | Write-back | Human-controlled | `save_document` for a DataHub Analysis document only, after all gates pass |
 
@@ -103,6 +105,10 @@ stateDiagram-v2
 ```
 
 `FINALIZE_READ_ONLY` means both judges passed their thresholds. It is **not** permission to write. The separate human decision and `DATAHUB_WRITEBACK_ENABLED=true` remain mandatory.
+
+Every write-back POST also requires a strong local reviewer capability. A
+disabled or unconfigured deployment fails closed before proposal state changes;
+the UI never persists the capability or compiles it into frontend assets.
 
 The local protocol guarantees one automatic writer claimant, not distributed
 exactly-once delivery. If DataHub may have accepted a request but its response
@@ -216,6 +222,7 @@ DATABASE_URL=
 DATAHUB_GMS_URL=http://host.docker.internal:8080
 DATAHUB_GMS_TOKEN=
 DATAHUB_WRITEBACK_ENABLED=false
+LOCAL_REVIEWER_CAPABILITY=
 
 QDRANT_URL=http://qdrant:6333
 QDRANT_COLLECTION=lineageguard_datahub
@@ -263,6 +270,12 @@ LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 ```
 
 `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`, and `LANGCHAIN_ENDPOINT` are supported as compatibility aliases. The application normalizes them to LangSmith variables at startup.
+
+Memory expiry removes both conversation turns and the last MCP-verified active
+asset. The CORS-approved memory `DELETE` also revokes the session's outstanding
+analysis handoff. `LOCAL_REVIEWER_CAPABILITY` is required only for an
+explicitly enabled write proof, must contain at least 24 characters, is entered
+manually in the UI, and remains only in memory for the current browser tab.
 
 `WORKER_LLM_PROVIDER` and `WORKER_LLM_MODEL` are not application settings in the current implementation. The RAG planner/answer provider uses `OPENAI_CHAT_MODEL`; NVIDIA is currently the advisory critic, not the general chat provider.
 
@@ -349,6 +362,11 @@ The 2026-08-01 P0 correctness run additionally proves live Qdrant-guided MCP
 confirmation, 35 exact multi-hop paths in a 36-asset impact report, and live
 rejection of duplicate add, rename-collision, and unchanged-type requests. See
 the [P0 correctness report](evals/reports/p0-correctness-live-2026-08-01.md).
+
+The matching P0 safety run proves atomic memory expiry, local CORS deletion,
+fail-closed reviewer capability checks, and verified live handoffs for all four
+chat-routed schema changes. See the
+[P0 safety and reliability report](evals/reports/p0-safety-reliability-live-2026-08-01.md).
 
 The older six-scenario showcase benchmark records `Precision@6=0.667`; it is
 retained as historical evidence and is not presented as the current result.

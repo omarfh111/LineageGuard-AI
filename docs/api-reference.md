@@ -123,18 +123,21 @@ whose hop count matches the original lineage result.
 
 | Method | Route | Rule |
 |---|---|---|
-| `POST` | `/api/v1/writebacks/prepare` | Requires a server-owned double-PASS judging run and idempotency key |
+| `POST` | `/api/v1/writebacks/prepare` | Requires enabled write-back, local reviewer capability, server-owned double-PASS run, and idempotency key |
 | `GET` | `/api/v1/writebacks/{run_id}` | Read proposal and immutable snapshot |
 | `GET` | `/api/v1/writebacks/{run_id}/audit` | Read ordered audit events |
 | `POST` | `/api/v1/writebacks/{run_id}/approve` | Human approval, revision, or rejection |
 | `POST` | `/api/v1/writebacks/{run_id}/rollback` | Separate approval to supersede a completed document |
 | `POST` | `/api/v1/writebacks/{run_id}/reconcile` | Resolve an uncertain create after live DataHub verification |
 
-The sole write action is `save_document` for an Analysis document. An approval
-fails safely when `DATAHUB_WRITEBACK_ENABLED=false`; it does not silently
-change DataHub. Proposal responses deliberately omit the idempotency key. The
-client that prepared the proposal must retain that key for subsequent human
-decisions.
+The sole write action is `save_document` for an Analysis document. All POST
+routes above require `X-LineageGuard-Reviewer-Capability`; the server compares
+it in constant time with `LOCAL_REVIEWER_CAPABILITY`. When
+`DATAHUB_WRITEBACK_ENABLED=false`, even proposal preparation fails with an
+explicit `503` before workflow state changes. A missing or weak server
+capability also returns `503`; a missing or incorrect header returns `403`.
+Proposal responses deliberately omit the idempotency key. The client that
+prepared the proposal must retain that key for subsequent human decisions.
 
 Concurrent approval requests are serialized with a durable compare-and-swap;
 only one caller may invoke DataHub. An ambiguous remote result returns
@@ -154,6 +157,7 @@ a fresh analysis. The revised report must pass all gates again.
 - `200` / `202`: normal read or accepted background operation.
 - `409`: concurrent operation, immutable idempotency conflict, or uncertain
   external outcome that requires reconciliation.
+- `403`: the local reviewer capability is missing or invalid.
 - `422`: validation failed or explicit confirmation is missing.
 - `503`: DataHub, Qdrant, or optional provider configuration is unavailable.
 - `504`: the bounded chat request deadline expired and work was cancelled.

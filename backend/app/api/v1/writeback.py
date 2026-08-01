@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import secrets
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
@@ -36,6 +37,30 @@ class PrepareRequest(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=200)
 
 
+def require_local_reviewer_capability(
+    provided: Annotated[
+        str | None,
+        Header(alias="X-LineageGuard-Reviewer-Capability"),
+    ] = None,
+) -> None:
+    """Fail closed before any local workflow state or DataHub write can change."""
+
+    settings = get_settings()
+    if not settings.datahub_writeback_enabled:
+        raise HTTPException(
+            503,
+            "Write-back is disabled. Set DATAHUB_WRITEBACK_ENABLED=true only for an explicitly approved disposable workflow.",
+        )
+    expected = settings.local_reviewer_capability
+    if not expected or len(expected) < 24:
+        raise HTTPException(
+            503,
+            "Local reviewer capability is not configured with at least 24 characters.",
+        )
+    if provided is None or not secrets.compare_digest(provided, expected):
+        raise HTTPException(403, "A valid local reviewer capability is required.")
+
+
 def get_writeback_service(
     client: Annotated[DataHubMcpClient, Depends(get_datahub_client)],
 ) -> WritebackService:
@@ -52,6 +77,7 @@ def get_writeback_service(
 @router.post("/prepare", response_model=WritebackProposalView)
 def prepare(
     request: PrepareRequest,
+    _: Annotated[None, Depends(require_local_reviewer_capability)],
     service: Annotated[WritebackService, Depends(get_writeback_service)],
 ) -> WritebackProposalView:
     stored = run_store.get(request.run_id)
@@ -97,6 +123,7 @@ def get_audit(
 async def approve(
     run_id: str,
     request: ApprovalRequest,
+    _: Annotated[None, Depends(require_local_reviewer_capability)],
     service: Annotated[WritebackService, Depends(get_writeback_service)],
 ) -> WritebackProposalView:
     try:
@@ -120,6 +147,7 @@ async def approve(
 async def rollback(
     run_id: str,
     request: ApprovalRequest,
+    _: Annotated[None, Depends(require_local_reviewer_capability)],
     service: Annotated[WritebackService, Depends(get_writeback_service)],
 ) -> WritebackProposalView:
     try:
@@ -143,6 +171,7 @@ async def rollback(
 async def reconcile(
     run_id: str,
     request: WritebackReconciliationRequest,
+    _: Annotated[None, Depends(require_local_reviewer_capability)],
     service: Annotated[WritebackService, Depends(get_writeback_service)],
 ) -> WritebackProposalView:
     """Resolve an uncertain create only after explicit human verification."""

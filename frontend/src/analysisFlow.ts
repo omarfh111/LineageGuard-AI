@@ -26,6 +26,7 @@ export type ChatAnalysisHandoff = {
   handoffId: string;
   expiresAt: string;
   target: VerifiedTarget;
+  changeType: ChangeType | null;
 };
 
 export type ChangeRequestPayload = {
@@ -133,6 +134,7 @@ export function createChatHandoff(input: {
   } | null;
   handoffId?: string | null;
   expiresAt?: string | null;
+  changeType?: ChangeType | null;
 }): ChatAnalysisHandoff | null {
   if (
     input.action !== "ANALYZE_IMPACT"
@@ -148,6 +150,7 @@ export function createChatHandoff(input: {
     handoffId: input.handoffId,
     expiresAt: input.expiresAt,
     target: input.resolution.targets[0],
+    changeType: input.changeType ?? null,
   };
 }
 

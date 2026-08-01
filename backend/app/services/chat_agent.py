@@ -23,6 +23,7 @@ from app.domain.contracts import (
     AgenticTraceStep,
     ChatActionProposal,
     ChatActionType,
+    ChangeType,
     ChatTargetResolution,
     FactualClaimVerification,
     ChatRequest,
@@ -487,6 +488,18 @@ def _search_terms_for_question(question: str, planned_terms: str, active_asset: 
     urn_match = re.search(r"urn:li:[^\s`]+", question)
     if urn_match:
         return urn_match.group(0)
+    # Schema-change requests commonly contain both a column identifier and an
+    # asset identifier (for example, "rename old to new in dbt orders
+    # dataset"). Prefer the noun immediately qualified as an asset so the new
+    # column name can never become the DataHub search target.
+    qualified_assets = re.findall(
+        r"\b(?:(?:snowflake|dbt|postgres(?:ql)?|s3|tableau|powerbi|looker|spark)\s+)?"
+        r"([A-Za-z0-9_.-]+)\s+(?:(?:semantic|physical)\s+)?(?:dataset|table|asset|actif)\b",
+        question,
+        re.IGNORECASE,
+    )
+    if qualified_assets:
+        return qualified_assets[-1].strip(".:-")
     direct = re.search(
         r"\b(?:of|from|about|for|de|du|des|sur)\s+(?:the\s+|le\s+|la\s+|les\s+)?(?:(?:snowflake|dbt|postgres(?:ql)?|s3|tableau|powerbi|looker|spark)\s+)?([A-Za-z0-9_.-]+)",
         question,
@@ -1319,14 +1332,64 @@ def _dedupe_evidence(evidence: list[AgentEvidence]) -> list[AgentEvidence]:
 
 def _propose_action(message: str) -> ChatActionProposal:
     lowered = message.lower()
-    if any(token in lowered for token in ("drop", "delete", "remove", "supprimer", "rename", "renommer", "change type", "changer le type")):
+    mentions_schema_object = bool(re.search(
+        r"\b(?:column|field|colonne|champ)\b", lowered
+    ))
+    write_intent = not mentions_schema_object and bool(re.search(
+        r"\b(?:write|save|publish|create|update|delete|remove|(?:é|e)crire|publier|cr(?:é|e)er|mettre\s+à\s+jour|supprimer)\b"
+        r".{0,48}\b(?:document|documentation|tag|domain|glossary|dataset|dashboard)\b",
+        lowered,
+    ))
+    if write_intent:
+        return ChatActionProposal(
+            action=ChatActionType.HITL_WRITEBACK,
+            requires_confirmation=True,
+            reason="A DataHub write-back is available only after a double PASS and explicit HITL approval.",
+        )
+
+    detected: set[ChangeType] = set()
+    patterns = {
+        ChangeType.ADD_COLUMN: (
+            r"\b(?:add|create|ajouter|cr(?:é|e)er)\b.{0,48}\b(?:column|field|colonne|champ)\b",
+            r"\b(?:column|field|colonne|champ)\b.{0,48}\b(?:add|create|ajouter|cr(?:é|e)er)\b",
+            r"\b(?:add|ajouter)\s+[A-Za-z_][\w]*\s+(?:to|into|à|dans)\b",
+        ),
+        ChangeType.RENAME_COLUMN: (
+            r"\b(?:rename|renommer)\b.{0,48}\b(?:column|field|colonne|champ)\b",
+            r"\b(?:rename|renommer)\b",
+        ),
+        ChangeType.CHANGE_COLUMN_TYPE: (
+            r"\b(?:change|alter|modify|convert|changer|modifier|convertir)\b.{0,64}\b(?:type|datatype|data\s+type)\b",
+            r"\b(?:type|datatype|data\s+type)\b.{0,48}\b(?:change|alter|modify|convert|changer|modifier|convertir)\b",
+        ),
+        ChangeType.DROP_COLUMN: (
+            r"\b(?:drop|delete|remove|supprimer)\b.{0,48}\b(?:column|field|colonne|champ)\b",
+            r"\b(?:drop\s+column|delete\s+column|remove\s+column|supprimer\s+(?:la\s+)?colonne)\b",
+            r"\b(?:drop|remove)\s+[A-Za-z_][\w]*\s+from\b",
+        ),
+    }
+    for change_type, expressions in patterns.items():
+        if any(re.search(expression, lowered) for expression in expressions):
+            detected.add(change_type)
+
+    if detected:
+        change_type = next(iter(detected)) if len(detected) == 1 else None
+        required_fields = ["asset_urn", "change_type", "column_name", "reason", "environment"]
+        if change_type in {ChangeType.RENAME_COLUMN, ChangeType.CHANGE_COLUMN_TYPE}:
+            required_fields.append("new_value")
         return ChatActionProposal(
             action=ChatActionType.ANALYZE_IMPACT,
+            change_type=change_type,
             requires_confirmation=True,
-            reason="A schema-change request needs an explicit, read-only impact analysis.",
-            required_fields=["asset_urn", "change_type", "column_name", "reason", "environment"],
+            reason=(
+                "A schema-change request needs an explicit, read-only impact analysis."
+                if change_type is not None
+                else "Multiple schema-change intents were detected; select one change type before analysis."
+            ),
+            required_fields=required_fields,
         )
-    if any(token in lowered for token in ("write", "save", "écrire", "publier", "document")):
+
+    if any(token in lowered for token in ("write", "save", "écrire", "publier")):
         return ChatActionProposal(
             action=ChatActionType.HITL_WRITEBACK,
             requires_confirmation=True,

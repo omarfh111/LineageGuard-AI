@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.core.config import Settings
@@ -65,3 +66,30 @@ def test_memory_keeps_only_a_verified_active_asset_and_clears_it() -> None:
     store.clear("browser-session-1")
     assert store.active_asset_for("browser-session-1", True) is None
     path.unlink()
+
+
+def test_memory_expiration_removes_turns_and_verified_asset_atomically() -> None:
+    now = datetime(2026, 8, 1, 10, 0, tzinfo=UTC)
+    clock = lambda: now
+    settings = memory_settings("sqlite:///:memory:")
+    object.__setattr__(settings, "chat_memory_ttl_hours", 1)
+    store = ChatMemoryStore(settings, clock=clock)
+    asset = RagCitation(
+        urn="urn:li:dataset:(urn:li:dataPlatform:snowflake,db.orders,PROD)",
+        label="orders", entity_type="DATASET", source="datahub_mcp_live",
+    )
+    store.record_turn("expiring-session", True, "question", "answer", asset)
+
+    now += timedelta(hours=1, seconds=1)
+
+    assert store.status("expiring-session").message_count == 0
+    assert store.context_for("expiring-session", True) == []
+    assert store.active_asset_for("expiring-session", True) is None
+
+
+def test_in_memory_chat_store_survives_separate_sqlite_connections() -> None:
+    store = ChatMemoryStore(memory_settings("sqlite:///:memory:"))
+
+    store.record_turn("shared-memory-session", True, "question", "answer")
+
+    assert store.status("shared-memory-session").message_count == 1

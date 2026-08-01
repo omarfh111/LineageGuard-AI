@@ -12,6 +12,8 @@ import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Callable
+from uuid import uuid4
 
 from app.core.config import Settings, get_settings
 from app.domain.contracts import ChatMemoryStatus, RagCitation
@@ -19,15 +21,32 @@ from app.services.run_store import sqlite_path
 
 
 class ChatMemoryStore:
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self._settings = settings or get_settings()
         self._path = sqlite_path(self._settings.database_url)
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._uri = self._path == ":memory:"
+        self._connection_target = (
+            f"file:lineageguard-chat-memory-{uuid4().hex}?mode=memory&cache=shared"
+            if self._uri else self._path
+        )
+        self._anchor = (
+            sqlite3.connect(self._connection_target, uri=True)
+            if self._uri else None
+        )
         if self._path != ":memory:":
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path)
+        connection = sqlite3.connect(
+            self._connection_target, uri=self._uri, timeout=5
+        )
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -99,7 +118,7 @@ class ChatMemoryStore:
     ) -> ChatMemoryStatus:
         if not enabled or not session_id or not self._settings.chat_memory_enabled:
             return ChatMemoryStatus(session_id=session_id, enabled=False, max_turns=self._settings.chat_memory_max_turns)
-        now = datetime.now(UTC)
+        now = self._clock()
         self._purge_expired(now)
         with closing(self._connect()) as connection, connection:
             connection.execute(
@@ -181,9 +200,13 @@ class ChatMemoryStore:
         )
 
     def _purge_expired(self, now: datetime | None = None) -> None:
-        cutoff = (now or datetime.now(UTC)) - timedelta(hours=self._settings.chat_memory_ttl_hours)
+        cutoff = (now or self._clock()) - timedelta(hours=self._settings.chat_memory_ttl_hours)
         with closing(self._connect()) as connection, connection:
             connection.execute("DELETE FROM chat_memory_turns WHERE created_at < ?", (cutoff.isoformat(),))
+            connection.execute(
+                "DELETE FROM chat_memory_active_assets WHERE updated_at < ?",
+                (cutoff.isoformat(),),
+            )
 
 
 chat_memory_store = ChatMemoryStore()
