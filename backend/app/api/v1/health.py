@@ -12,6 +12,15 @@ from app.core.config import get_settings
 router = APIRouter(tags=["health"])
 
 
+class ProviderReadiness(BaseModel):
+    """Safe configuration readiness for one optional model role."""
+
+    available: bool
+    model: str | None
+    mode: Literal["external", "local_fallback"]
+    reason: str
+
+
 class HealthResponse(BaseModel):
     """Configuration health without making external network calls.
 
@@ -28,6 +37,7 @@ class HealthResponse(BaseModel):
     qdrant: Literal["configured", "not_configured"]
     writeback: Literal["disabled", "reviewer_unconfigured", "ready"]
     demo_mode: bool
+    providers: dict[str, ProviderReadiness]
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -35,12 +45,33 @@ def read_health() -> HealthResponse:
     """Report safe runtime configuration without exposing credentials."""
 
     settings = get_settings()
-    provider_keys = [
-        bool(settings.openai_api_key),
-        bool(settings.groq_api_key),
-        bool(settings.nvidia_api_key),
-    ]
-    configured_providers = sum(provider_keys)
+    providers = {
+        "chat": _provider_readiness(
+            key_present=bool(settings.openai_api_key),
+            model=settings.chat_model,
+            fallback=settings.demo_mode,
+            role="OpenAI chat",
+        ),
+        "nvidia_critic": _provider_readiness(
+            key_present=bool(settings.nvidia_api_key),
+            model=settings.nvidia_critic_model,
+            role="NVIDIA critic",
+        ),
+        "openai_judge": _provider_readiness(
+            key_present=bool(settings.openai_api_key),
+            model=settings.openai_judge_model,
+            role="OpenAI judge",
+        ),
+        "groq_judge": _provider_readiness(
+            key_present=bool(settings.groq_api_key),
+            model=settings.groq_judge_model,
+            role="Groq judge",
+        ),
+    }
+    configured_providers = sum(
+        providers[name].available
+        for name in ("nvidia_critic", "openai_judge", "groq_judge")
+    )
     llm_state: Literal["configured", "partial", "not_configured"]
     if configured_providers >= 2:
         llm_state = "configured"
@@ -64,4 +95,39 @@ def read_health() -> HealthResponse:
         qdrant="configured" if settings.qdrant_url else "not_configured",
         writeback=writeback_state,
         demo_mode=settings.demo_mode,
+        providers=providers,
+    )
+
+
+def _provider_readiness(
+    *,
+    key_present: bool,
+    model: str | None,
+    role: str,
+    fallback: bool = False,
+) -> ProviderReadiness:
+    """Describe configured capability without probing or leaking credentials."""
+
+    if key_present and model:
+        return ProviderReadiness(
+            available=True,
+            model=model,
+            mode="external",
+            reason="Configured; availability is confirmed only when the request succeeds.",
+        )
+    if fallback:
+        return ProviderReadiness(
+            available=True,
+            model="deterministic-demo-fallback",
+            mode="local_fallback",
+            reason="Using the deterministic local demonstration fallback.",
+        )
+    missing = "credentials and model" if not key_present and not model else (
+        "credentials" if not key_present else "model"
+    )
+    return ProviderReadiness(
+        available=False,
+        model=model,
+        mode="external",
+        reason=f"{role} {missing} are not configured.",
     )

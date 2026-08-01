@@ -168,7 +168,13 @@ Expected health shape:
   "datahub": "configured",
   "llm_providers": "configured",
   "qdrant": "configured",
-  "demo_mode": false
+  "demo_mode": false,
+  "providers": {
+    "chat": { "available": true, "model": "configured-model", "mode": "external", "reason": "Configured; availability is confirmed only when the request succeeds." },
+    "nvidia_critic": { "available": false, "model": null, "mode": "external", "reason": "NVIDIA critic credentials and model are not configured." },
+    "openai_judge": { "available": true, "model": "configured-model", "mode": "external", "reason": "Configured; availability is confirmed only when the request succeeds." },
+    "groq_judge": { "available": true, "model": "configured-model", "mode": "external", "reason": "Configured; availability is confirmed only when the request succeeds." }
+  }
 }
 ```
 
@@ -213,6 +219,14 @@ Qdrant materially guides live confirmation without becoming a source of truth. F
    missing-metadata facts, every risk component, score, level, and confidence
    before either provider is called.
 5. Only after a double PASS, prepare a proposal. Keep write-back disabled for normal demonstrations.
+
+The primary frontend now has one six-entry navigation and a contextual
+**Governed review** continuation after analysis. It no longer embeds a second
+legacy application with duplicate catalog, assistant, and navigation flows.
+`/api/v1/health` reports safe per-role readiness for chat, NVIDIA critique,
+OpenAI judging, and Groq judging; unavailable external actions are visibly
+disabled. Before presenting, run `./scripts/demo-preflight.ps1` and follow the
+[reliable five-minute demonstration](docs/five-minute-demo.md).
 
 ## Configuration reference
 
@@ -401,6 +415,7 @@ For the full acceptance protocol, use [the acceptance test plan](docs/acceptance
 |---|---|
 | [Architecture](docs/architecture.md) | Component boundaries, diagrams, data flow, and invariants |
 | [Runbook](docs/runbook.md) | Installation, configuration, tracing, demo sequence, and operations |
+| [Five-minute demo](docs/five-minute-demo.md) | Preflight, timed judge-facing flow, safe fallbacks, and failure matrix |
 | [API reference](docs/api-reference.md) | Current API routes and safe request flows |
 | [Agentic RAG + MCP](docs/agentic-rag.md) | Retrieval, target resolution, memory, verification, and routing |
 | [DataHub local setup](docs/datahub-local.md) | Local Quickstart and showcase datapack |

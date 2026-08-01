@@ -91,6 +91,10 @@ Do not expect the **Load 50 more assets** control when the cache already holds e
 
 ## 6. Standard demo procedure
 
+For a timed presentation, run `./scripts/demo-preflight.ps1` and use the
+[reliable five-minute demonstration](five-minute-demo.md). The longer procedure
+below is the full operator walkthrough, not the on-stage script.
+
 1. Confirm DataHub, Qdrant, and provider configuration through `/api/v1/health`.
 2. Open the 3D catalog; wait until its asset count is non-zero and the status says `READY`.
 3. Hover and select a node to show its URN, type, platform, owner count, and in-session actions.

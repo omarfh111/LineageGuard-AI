@@ -83,14 +83,22 @@ async function json(route: Route, body: unknown, statusCode = 200) {
   await route.fulfill({ status: statusCode, contentType: "application/json", body: JSON.stringify(body) });
 }
 
-async function mockApi(page: Page, options: { recoverRefresh?: boolean } = {}) {
+async function mockApi(page: Page, options: { recoverRefresh?: boolean; nvidiaAvailable?: boolean; criticFails?: boolean } = {}) {
   let refreshRequested = false;
   let recoveryPolls = 0;
   let restoreCalls = 0;
   await page.route("**/api/v1/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    if (path === "/api/v1/health") return json(route, { status: "ok", environment: "test", datahub: "configured", llm_providers: "configured", qdrant: "configured", writeback: "disabled", demo_mode: false });
+    if (path === "/api/v1/health") return json(route, { status: "ok", environment: "test", datahub: "configured", llm_providers: "partial", qdrant: "configured", writeback: "disabled", demo_mode: false, providers: {
+      chat: { available: true, model: "chat-test", mode: "external", reason: "Configured for test." },
+      nvidia_critic: options.nvidiaAvailable
+        ? { available: true, model: "nvidia-test", mode: "external", reason: "Configured for test." }
+        : { available: false, model: null, mode: "external", reason: "NVIDIA critic is not configured." },
+      openai_judge: { available: true, model: "openai-test", mode: "external", reason: "Configured for test." },
+      groq_judge: { available: false, model: null, mode: "external", reason: "Groq judge is not configured." },
+    } });
+    if (path === "/api/v1/workflows/critique" && options.criticFails) return json(route, { detail: "NVIDIA runtime unavailable" }, 502);
     if (path === "/api/v1/judges/history") return json(route, []);
     if (path === "/api/v1/workflows/graph") return json(route, workflowGraph);
     if (path === `/api/v1/workflows/analysis/${runId}`) { restoreCalls += 1; return json(route, execution); }
@@ -150,4 +158,28 @@ test("tampered workflow pointer is removed without a restore request", async ({ 
   await expect(page.getByRole("heading", { name: "Your change" })).toBeVisible();
   expect(api.getRestoreCalls()).toBe(0);
   expect(await page.evaluate(() => sessionStorage.getItem("lineageguard-analysis-run-v1"))).toBeNull();
+});
+
+test("governed review disables provider actions that cannot run", async ({ page }) => {
+  await page.addInitScript((id) => sessionStorage.setItem("lineageguard-analysis-run-v1", id), runId);
+  await mockApi(page);
+  await page.goto("/#/review", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByTestId("governed-review")).toHaveAttribute("data-analysis-run-id", runId);
+  await expect(page.getByRole("button", { name: "NVIDIA unavailable" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Judges unavailable" })).toBeDisabled();
+  await expect(page.getByText("NVIDIA critic is not configured.")).toBeVisible();
+  await expect(page.getByText("Groq judge is not configured.")).toBeVisible();
+  await expect(page.getByRole("navigation")).toHaveCount(1);
+});
+
+test("a failed live provider is circuit-broken for the page session", async ({ page }) => {
+  await page.addInitScript((id) => sessionStorage.setItem("lineageguard-analysis-run-v1", id), runId);
+  await mockApi(page, { nvidiaAvailable: true, criticFails: true });
+  await page.goto("/#/review", { waitUntil: "domcontentloaded" });
+
+  await page.getByRole("button", { name: "Run NVIDIA critique" }).click();
+  await expect(page.getByRole("alert")).toContainText("NVIDIA runtime unavailable");
+  await expect(page.getByRole("button", { name: "NVIDIA unavailable" })).toBeDisabled();
+  await expect(page.getByText(/last live request failed/i)).toBeVisible();
 });

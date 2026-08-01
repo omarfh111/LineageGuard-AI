@@ -60,7 +60,7 @@ class NvidiaCritic:
                 timeout=self._timeout,
             ), timeout=self._timeout + 5)
             content = response.choices[0].message.content
-            parsed = _json_object(content)
+            parsed = _normalize_critique_payload(_json_object(content))
             parsed["provider"] = "nvidia"
             parsed["model"] = self._model
             return AdvisoryCritique.model_validate(parsed)
@@ -114,7 +114,111 @@ def _json_object(content: str | None) -> dict[str, object]:
     candidate = content.strip()
     if candidate.startswith("```"):
         candidate = candidate.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    parsed = json.loads(candidate)
-    if not isinstance(parsed, dict):
-        raise ValueError("response must be an object")
-    return parsed
+    try:
+        parsed = json.loads(candidate)
+        if not isinstance(parsed, dict):
+            raise ValueError("response must be an object")
+        return parsed
+    except json.JSONDecodeError as direct_error:
+        # Some OpenAI-compatible reasoning models ignore JSON mode and wrap a
+        # valid object in a short preamble or reasoning markers. Accept the
+        # first complete JSON object, but never repair, concatenate, or infer
+        # missing fields: Pydantic still validates the exact provider payload.
+        decoder = json.JSONDecoder()
+        for index, character in enumerate(candidate):
+            if character != "{":
+                continue
+            try:
+                embedded, _ = decoder.raw_decode(candidate[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(embedded, dict):
+                return embedded
+        raise direct_error
+
+
+def _normalize_critique_payload(parsed: dict[str, object]) -> dict[str, object]:
+    """Normalize harmless provider formatting variants, never missing facts.
+
+    The critic is advisory and has no authority. We accept common aliases and
+    conservative severity labels, but leave absent findings or invalid content
+    for Pydantic to reject instead of fabricating a successful critique.
+    """
+
+    normalized = dict(parsed)
+    if not normalized.get("summary") and normalized.get("assessment"):
+        normalized["summary"] = normalized["assessment"]
+    summary = normalized.get("summary")
+    if isinstance(summary, dict):
+        summary = summary.get("text") or summary.get("summary") or summary.get("assessment")
+    if isinstance(summary, list) and all(isinstance(item, str) for item in summary):
+        summary = " ".join(summary)
+    normalized["summary"] = summary
+
+    raw_issues = normalized.get("issues", [])
+    if isinstance(raw_issues, dict):
+        raw_issues = [raw_issues]
+    issues: list[dict[str, object]] = []
+    if isinstance(raw_issues, list):
+        for raw_issue in raw_issues:
+            if isinstance(raw_issue, str):
+                issues.append({
+                    "severity": "MAJOR",
+                    "finding": raw_issue,
+                    "evidence_ids": [],
+                })
+                continue
+            if not isinstance(raw_issue, dict):
+                continue
+            severity = str(raw_issue.get("severity", "MAJOR")).upper()
+            if severity not in {"CRITICAL", "MAJOR", "MINOR"}:
+                severity = "CRITICAL" if severity in {"HIGH", "BLOCKER"} else "MAJOR"
+            finding = (
+                raw_issue.get("finding")
+                or raw_issue.get("issue")
+                or raw_issue.get("description")
+            )
+            evidence_ids = raw_issue.get("evidence_ids", [])
+            if isinstance(evidence_ids, str):
+                evidence_ids = [evidence_ids]
+            if isinstance(evidence_ids, list):
+                evidence_ids = [item for item in evidence_ids if isinstance(item, str)]
+            issues.append({
+                "severity": severity,
+                "finding": finding,
+                "evidence_ids": evidence_ids if isinstance(evidence_ids, list) else [],
+            })
+    normalized["issues"] = issues
+
+    revisions = normalized.get("recommended_revisions")
+    if revisions is None:
+        revisions = normalized.get("recommendations", [])
+    if isinstance(revisions, str):
+        revisions = [revisions]
+    if isinstance(revisions, list):
+        cleaned_revisions: list[str] = []
+        for revision in revisions:
+            if isinstance(revision, str):
+                cleaned_revisions.append(revision)
+            elif isinstance(revision, dict):
+                text = (
+                    revision.get("revision")
+                    or revision.get("recommendation")
+                    or revision.get("action")
+                    or revision.get("description")
+                )
+                if isinstance(text, str):
+                    cleaned_revisions.append(text)
+        revisions = cleaned_revisions
+    normalized["recommended_revisions"] = revisions
+
+    confidence = normalized.get("confidence")
+    if isinstance(confidence, str):
+        try:
+            confidence = float(confidence.removesuffix("%"))
+        except ValueError:
+            pass
+    if isinstance(confidence, (int, float)) and 1 < confidence <= 100:
+        confidence = confidence / 100
+    normalized["confidence"] = confidence
+    return normalized

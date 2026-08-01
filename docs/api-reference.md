@@ -18,6 +18,13 @@ Base URL: `http://localhost:8000`. The generated OpenAPI contract at <http://loc
 
 The DataHub bridge enforces a server-side allowlist. These routes cannot call write tools.
 
+The health response also exposes a non-secret `providers` map for the `chat`,
+`nvidia_critic`, `openai_judge`, and `groq_judge` roles. Each entry contains
+`available`, `model`, `mode`, and a safe `reason`. `available` means the role
+has the configuration required to attempt a request; it is not a live network
+probe and never exposes a credential. The frontend uses it to disable actions
+that cannot run.
+
 The cache response includes `refresh_in_progress`, `refresh_started_at`,
 `last_updated_at`, `last_checked_at`, `generation`, `consecutive_failures`,
 `last_error`, and `detected_change`. A `STALE` response with nodes means the
