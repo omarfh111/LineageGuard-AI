@@ -73,11 +73,14 @@ the same read-only flows are then repeated against the local DataHub stack with
 `LINEAGEGUARD_LIVE_E2E=1 npm run test:e2e:live` (PowerShell: assign the
 environment variable first). The live scenario performs reads and analysis only.
 
-The current reviewed result is
-[`reports/professional-validation-2026-07-31.md`](reports/professional-validation-2026-07-31.md):
-30/30 completed, `Precision@6=0.992`, `Recall@6=1.000`, `MRR@6=1.000`,
-`NDCG@6=1.000`, all routing/target/tool/verification gates at `1.000`, and
-unsupported-claim escape rate `0.000`.
+The latest reviewed professional result is
+[`reports/p0-professional-validation-2026-08-01.md`](reports/p0-professional-validation-2026-08-01.md):
+30/30 completed; 22 cases with exact ranking labels;
+`Precision@6=0.902`, `Recall@6=0.909`, `MRR@6=0.909`,
+`NDCG@6=0.909`; all routing/target/tool/verification gates at `1.000`; and
+unsupported-claim escape rate `0.000`. The earlier 2026-07-31 result remains a
+historical measurement with different source/dataset state and must not be
+silently substituted for the newer evidence.
 
 The focused live correctness evidence for hybrid Qdrant/MCP confirmation,
 multi-hop path expansion, and invalid change contracts is recorded in

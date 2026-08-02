@@ -2,9 +2,49 @@
 
 > Evidence-first DataHub agents for governed schema-change analysis, verified catalog answers, and human-approved documentation write-back.
 
+[![CI](https://github.com/omarfh111/LineageGuard-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/omarfh111/LineageGuard-AI/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache%202.0-0B5FFF.svg)](LICENSE)
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=0B1020)
+![LangGraph](https://img.shields.io/badge/LangGraph-1.x-1C3C3C)
+![DataHub](https://img.shields.io/badge/DataHub-OSS%20%2B%20MCP-7457FF)
+![Qdrant](https://img.shields.io/badge/Qdrant-1.15%2F1.16-DC244C?logo=qdrant&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker%20Compose-ready-2496ED?logo=docker&logoColor=white)
+![Safety](https://img.shields.io/badge/default-read--only-13795B)
+
 LineageGuard AI is an Apache-2.0 prototype for the **Build with DataHub: The Agent Hackathon** in the **Agents That Do Real Work** track. It connects to a local DataHub instance through the official DataHub MCP server, reads live metadata and lineage, and turns that evidence into controlled human workflows.
 
 The application never changes a warehouse schema, dbt model, lineage edge, dashboard, or source data. Its only possible mutation is a narrowly scoped **DataHub Analysis document**, and only after deterministic validation, independent review, explicit human approval, and an opt-in configuration flag.
+
+## Submission snapshot
+
+| Item | LineageGuard evidence |
+|---|---|
+| Hackathon | [Build with DataHub: The Agent Hackathon](https://datahub.devpost.com/) |
+| Track | **Agents That Do Real Work** |
+| DataHub technology | DataHub OSS/Core plus the official DataHub MCP Server |
+| Real work | Reads schema and multi-hop lineage, creates a deterministic impact/remediation dossier, obtains independent review, and can publish one governed Analysis document back to DataHub |
+| Safe default | Read-only; model providers are optional; every DataHub mutation gate fails closed |
+| Reproducibility | Docker Compose, checked-in configuration template, CI, deterministic tests, browser E2E, versioned evaluation evidence, and an operator runbook |
+| License | Apache 2.0 |
+
+The Devpost submission requires a public repository, clear testing access, a
+written description, and a public YouTube/Vimeo demonstration **under three
+minutes**. The repository-side assets are organized in the
+[submission checklist](docs/submission-checklist.md); hosting, the final video
+URL, screenshots, and the Devpost form remain owner actions.
+
+### Why it is more than metadata chat
+
+LineageGuard composes DataHub context into a controlled operational workflow.
+Qdrant can nominate candidates but cannot prove a fact; DataHub MCP must
+confirm the exact URN and provide target-owned evidence. A deterministic
+engine then computes the blast radius and risk, two independent judges review
+the immutable server dossier, and a human owns the only possible write. This
+separation makes failed providers, ambiguous assets, prompt injection,
+duplicate approvals, and lost network responses explicit states rather than
+silent guesses.
 
 ## What it does
 
@@ -33,6 +73,37 @@ The application never changes a warehouse schema, dbt model, lineage edge, dashb
   immutable server snapshot. Only the opaque run UUID is kept in session storage;
   judge results, reviewer capability, approval state, and idempotency keys are reset.
 
+## Technology stack
+
+| Layer | Technology | Responsibility |
+|---|---|---|
+| Metadata system of record | DataHub OSS/Core | Catalog, schemas, ownership, governance, lineage, and the governed Analysis document |
+| Agent/tool bridge | Official DataHub MCP Server (`mcp-server-datahub`) | Server-side allowlisted reads and the separately isolated document writer |
+| API and contracts | Python 3.11+, FastAPI, Pydantic, Uvicorn | Typed HTTP boundary, validation, health, workflow APIs, and safe errors |
+| Agent orchestration | LangGraph | Bounded planning, retrieval, tools, response, verification, and retry states |
+| Retrieval | Qdrant + OpenAI embeddings or deterministic `local_hash` | Metadata-only candidate index; never the factual authority |
+| Durable local control plane | SQLite | Analysis snapshots, memory, judging summaries, proposals, audit events, CAS state, and idempotency bindings |
+| Optional model roles | OpenAI, Groq, NVIDIA Build | Chat/grounding judge, technical-safety judge, and advisory critic; roles remain independent |
+| Observability | LangSmith | Optional LangGraph and named provider traces with safe public trace summaries |
+| Web application | React 19, TypeScript, Vite 7 | Six-view operator UI, workflow recovery, reviewer interaction, and evidence display |
+| Graph visualization | `react-force-graph-3d` / Three.js | Code-split interactive catalog and lineage topology |
+| Delivery and quality | Docker Compose, Pytest, Vitest, Playwright, GitHub Actions | Reproducible local stack, unit/contract/security tests, browser E2E, and CI |
+
+## Agent and control-plane responsibilities
+
+| Component | Performs | Cannot do |
+|---|---|---|
+| Planning agent | Classifies the question, normalizes business terms, and chooses bounded read needs | Call tools or authorize a write |
+| RAG retriever | Finds metadata candidates in Qdrant | Promote vector similarity to factual evidence |
+| MCP tool manager | Resolves and locks an exact live DataHub target; executes allowlisted reads | Substitute an unrelated asset during retry |
+| Reasoning agent | Produces a concise answer from allowed candidate context and named MCP evidence | Use hidden or unlisted evidence |
+| Verification agent | Checks every extracted factual claim, citation, evidence owner, and requested target | Convert missing proof into a PASS |
+| Deterministic impact engine | Validates the change contract and computes evidence, paths, blast radius, risk, remediation, and rollback | Execute a schema change |
+| NVIDIA critic | Optionally challenges the immutable dossier and returns a schema-validated advisory critique | Approve, edit the deterministic plan, or call DataHub |
+| OpenAI judge | Independently reviews factual grounding | See or influence the Groq verdict |
+| Groq judge | Independently reviews technical correctness and safety | See or influence the OpenAI verdict |
+| HITL controller | Applies the feature flag, reviewer capability, idempotency, CAS, reconciliation, audit, and compensation rules | Bypass Gate 0 or double PASS |
+
 ## Architecture
 
 ```mermaid
@@ -54,7 +125,8 @@ flowchart LR
     Impact --> Nvidia["NVIDIA advisory critic (optional)"]
     Impact --> Judges["OpenAI + Groq independent judges (optional)"]
     Judges --> HITL["Human approval"]
-    HITL -->|"only when enabled"| Document["DataHub Analysis document"]
+    HITL -->|"flag + capability + approval"| Writer["Isolated MCP writer<br/>save_document only"]
+    Writer --> Document["DataHub Analysis document"]
 ```
 
 ### Agentic RAG and MCP workflow
@@ -132,9 +204,22 @@ failure procedures are in [Secure HITL write-back](docs/hitl-writeback.md).
 
 ```powershell
 Copy-Item .env.example .env
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
+Push-Location frontend
+npm ci
+Pop-Location
 ```
 
 `.env` is ignored by Git. Never commit it or include keys in screenshots, logs, issues, or prompts.
+
+Keep the virtual environment active while running the DataHub loader because
+`load-showcase-data.ps1` uses the installed DataHub Python package. Docker runs
+the application itself; the local Python/Node installations support the loader,
+quality gates, and development workflow.
 
 ### 2. Start DataHub and load sample metadata
 
@@ -168,6 +253,7 @@ Expected health shape:
   "datahub": "configured",
   "llm_providers": "configured",
   "qdrant": "configured",
+  "writeback": "disabled",
   "demo_mode": false,
   "providers": {
     "chat": { "available": true, "model": "configured-model", "mode": "external", "reason": "Configured; availability is confirmed only when the request succeeds." },
@@ -196,7 +282,7 @@ The API starts loading the catalog when the **backend process starts**, before a
   retries without restarting the backend.
 - `READY` means the catalog is usable. The status message tells you when relationship enrichment is still in progress.
 - Filtering and text search are client-side filters over the complete loaded graph. Selecting `All` restores every cached node.
-- “Load 50 more assets” appears only if the server graph reached `CATALOG_MAX_ASSETS`; with a complete 1,188-asset showcase cache, no extra button is expected.
+- “Load 50 more assets” appears only when more discovered assets remain outside the current client slice. A fully loaded catalog within `CATALOG_MAX_ASSETS` correctly has no extra button. Catalog counts vary with the DataHub/datapack version; the dated 2026-08-01 evidence observed 1,191 live root assets.
 
 ### Agentic RAG assistant
 
@@ -220,9 +306,9 @@ Qdrant materially guides live confirmation without becoming a source of truth. F
    before either provider is called.
 5. Only after a double PASS, prepare a proposal. Keep write-back disabled for normal demonstrations.
 
-The primary frontend now has one six-entry navigation and a contextual
-**Governed review** continuation after analysis. It no longer embeds a second
-legacy application with duplicate catalog, assistant, and navigation flows.
+The active frontend entry point uses one six-entry navigation and a contextual
+**Governed review** continuation after analysis. It does not mount a second
+catalog, assistant, or navigation flow.
 `/api/v1/health` reports safe per-role readiness for chat, NVIDIA critique,
 OpenAI judging, and Groq judging; unavailable external actions are visibly
 disabled. Before presenting, run `./scripts/demo-preflight.ps1` and follow the
@@ -273,7 +359,7 @@ GROQ_API_KEY=
 GROQ_JUDGE_MODEL=openai/gpt-oss-20b
 NVIDIA_API_KEY=
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
-NVIDIA_CRITIC_MODEL=
+NVIDIA_CRITIC_MODEL=nvidia/nemotron-3-nano-30b-a3b
 NVIDIA_TIMEOUT_SECONDS=90
 
 JUDGE_TEMPERATURE=0
@@ -287,6 +373,14 @@ LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 ```
 
 `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`, and `LANGCHAIN_ENDPOINT` are supported as compatibility aliases. The application normalizes them to LangSmith variables at startup.
+
+Keep the NVIDIA worker and advisory critic separate. A long-horizon worker such
+as `z-ai/glm-5.2` may be useful outside the interactive path, but it is too slow
+for the demo's bounded advisory call on the shared free endpoint. The tested
+critic configuration above uses `nvidia/nemotron-3-nano-30b-a3b`; on 2026-08-01
+it produced a schema-valid critique in 2.92 seconds. The critic disables model
+reasoning, streams the response, filters evidence IDs against the dossier, and
+allows one schema-only repair attempt inside the same 90-second deadline.
 
 Memory expiry removes both conversation turns and the last MCP-verified active
 asset. The CORS-approved memory `DELETE` also revokes the session's outstanding
@@ -409,6 +503,66 @@ retained as historical evidence and is not presented as the current result.
 
 For the full acceptance protocol, use [the acceptance test plan](docs/acceptance-test-plan.md). The opt-in mutation procedure and its safety constraints are documented in [the live write-back proof](docs/live-writeback-proof.md).
 
+### Test coverage by risk
+
+| Risk or capability | Automated / recorded evidence |
+|---|---|
+| API contracts and safe health | FastAPI contract tests; non-secret dependency and provider readiness |
+| Agent routing and target resolution | Adversarial chat tests for ambiguity, missing assets, pronouns, platform-qualified assets, all four change types, and prompt injection |
+| Retrieval quality | Offline regression plus 30-query reviewed live benchmark with Precision/Recall/MRR/NDCG and ranking provenance |
+| Claim grounding | Per-claim anchor validation, target-owned evidence, citation coverage, unsupported-claim blocking, and zero measured escape in the dated professional run |
+| Schema-change correctness | Duplicate add, rename collision, unchanged/missing type, incompatible evidence, and four valid typed contracts |
+| Multi-hop lineage | Exact acyclic MCP paths and Gate 0 rejection of altered endpoints, hops, and intermediate URNs |
+| 3D cache reliability | Fingerprint stability, non-blanking refresh, watchdog recovery, generation preservation, node-position stabilization, filter reset, and live browser recovery |
+| Workflow recovery | Immutable server snapshot reload, malformed/unknown pointer rejection, and stale-form invalidation |
+| Provider boundaries | Strict NVIDIA normalization/repair contract, independent OpenAI/Groq verdicts, bounded retries, and unavailable-provider fail-closed states |
+| Write-back safety | Disabled-feature behavior, reviewer capability, idempotency binding, concurrent prepare/approve/rollback, uncertain outcomes, reconciliation identity, audit ordering, and compensation |
+| Browser behavior | Vitest contracts plus deterministic Playwright scenarios; opt-in live DataHub browser test is separated from CI |
+
+The current tree collects **171 backend tests**: the latest local run completed
+**167 PASS / 4 SKIP**, where the four skips are explicitly opt-in DataHub
+integration proofs. The frontend quality gate completed **21/21 Vitest tests**,
+TypeScript compilation, and the Vite production build. The latest committed
+professional report remains the authoritative dated live result; current
+commands must be rerun after every code change before a release tag. See
+[Validation evidence](evals/README.md) for the difference between unit,
+offline, live read-only, and live mutation evidence.
+
+## Problems encountered and how they were resolved
+
+| Problem observed | Root cause | Implemented resolution |
+|---|---|---|
+| Health always looked unconfigured | Bootstrap placeholders ignored runtime settings | Health now reports DataHub, Qdrant, write-back, demo mode, and per-role provider readiness without probing or exposing credentials |
+| `orders` schema/lineage answers used related assets | Search terms, vector rank, and retry behavior could drift from the requested target | Business-term normalization, exact platform/name resolution, locked URNs, target-owned evidence, and retry substitution rejection |
+| A nonexistent asset caused reads on real assets | Retry expanded to semantically similar Qdrant candidates | `NOT_FOUND` is terminal for target-specific tools; schema/lineage calls remain at zero |
+| A cited answer could still contain unsupported facts | Verification checked citation presence too coarsely | Every extracted factual claim now needs compatible live MCP anchors; unsupported or negative claims fail closed |
+| Qdrant records became stale after DataHub deletion | In-place upserts could not prove snapshot completeness | Isolated snapshot collection, exact-count validation, atomic alias swap, and cleanup of the superseded collection |
+| Re-indexing blocked chat | UI treated any ingestion as no-index state | The previous alias remains queryable and the UI reports `CHAT READY · INDEXING` |
+| 3D graph repeatedly refreshed or disappeared | Unstable fingerprints, browser-driven refresh, and replacement before completion | Server-owned boot, stable root fingerprint, two-observation debounce, rotating exact probes, watchdog, preserved graph, and atomic swap |
+| 3D node layout jumped on unchanged polls | Fresh graph objects discarded force-layout coordinates | Frontend reconciliation reuses unchanged graph data and node `x/y/z` coordinates while still accepting real topology changes |
+| Duplicate approvals could duplicate a remote write | UI idempotency alone cannot serialize concurrent requests | SQLite `BEGIN IMMEDIATE`, report/key binding, compare-and-swap ownership, at-most-once automatic create attempt, and explicit uncertain-state reconciliation |
+| NVIDIA returned prose, invalid JSON, timeouts, or retired models | Provider/model output contracts and availability vary | Streaming, reasoning-disabled bounded output, conservative normalization, Pydantic validation, evidence-ID allowlist, one repair inside one deadline, and explicit advisory failure |
+| Groq structured output could be rejected or unavailable | Provider capability and quota are not guaranteed | JSON Schema first, strict JSON-object fallback, bounded retry, and an unavailable verdict that never becomes PASS |
+| `COMPLETED` looked like factual approval | Transport/stage completion was confused with business verification | User-facing states are `VERIFIED`, `LIMITED`, `ACTION_REQUIRED`, and workflow-specific governed states |
+| Browser reload lost or over-restored authority | Workflow state lived only in UI or could have restored approval context | Only the server-owned analysis UUID is restored; judge results, capabilities, keys, and approval authority reset |
+| Frontend CI could not resolve a stylesheet | Import path/case did not match the repository asset | Import was corrected and covered by the TypeScript/Vite production check |
+
+The expanded incident history, verification commands, and residual risks are
+in [Problem and resolution log](docs/problem-resolution-log.md). These are
+engineering lessons, not claims that external providers or a local Docker
+installation can never fail.
+
+## Hackathon-criteria alignment
+
+| Official criterion | Evidence in this project |
+|---|---|
+| Use of DataHub | Live catalog, schema, ownership, lineage, exact multi-hop paths, official MCP reads, and an opt-in Analysis-document write-back |
+| Technical execution | Typed contracts, deterministic Gate 0, target locking, bounded concurrency/timeouts, durable HITL state, CI, E2E, evaluation provenance, and safe degradation |
+| Originality | Evidence-first schema-change governance that combines a 3D DataHub graph, Agentic RAG, independent model review, and compensatable knowledge write-back |
+| Real-world usefulness | Helps data/platform teams evaluate blast radius and capture reviewed operational knowledge before risky schema work |
+| Submission quality | English README, architecture diagrams, quick start, API/runbook/troubleshooting docs, under-three-minute video plan, and versioned evidence |
+| Bonus open-source contribution | Not claimed in this repository; add a linked DataHub PR/RFC/documentation contribution only if one is actually submitted |
+
 ## Documentation
 
 | Document | Use it for |
@@ -422,6 +576,8 @@ For the full acceptance protocol, use [the acceptance test plan](docs/acceptance
 | [Double judging](docs/double-judging.md) | Gate 0, provider independence, fallback, and aggregation |
 | [HITL write-back](docs/hitl-writeback.md) | Approval states, idempotency, audit, and compensation |
 | [Troubleshooting](docs/troubleshooting.md) | Docker, DataHub, catalog, RAG, NVIDIA, Groq, and tracing diagnosis |
+| [Problem and resolution log](docs/problem-resolution-log.md) | Symptoms, root causes, fixes, verification, and residual risk |
+| [Submission checklist](docs/submission-checklist.md) | Devpost fields, public-access checks, evidence package, and under-three-minute video plan |
 | [Evaluation assets](evals/README.md) | Offline and live evaluation methodology |
 
 ## Current boundaries and next work

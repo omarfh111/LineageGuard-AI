@@ -25,6 +25,8 @@ import {
   loadAnalysisRun,
   recoverCatalogGraph,
   saveAnalysisRun,
+  stabilizeCatalogGraphData,
+  type StableCatalogGraphData,
 } from "./recovery";
 import type { RuntimeHealth } from "./runtimeHealth";
 
@@ -113,6 +115,7 @@ function MapView() {
   const [selected, setSelected] = useState<CatalogNode | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const stableGraph = useRef<StableCatalogGraphData<CatalogNode, CatalogEdge> | null>(null);
 
   useEffect(() => {
     const load = () => request<CatalogCache>("/api/v1/datahub/catalog/cache").then((snapshot) => {
@@ -139,9 +142,13 @@ function MapView() {
     const term = query.trim().toLowerCase();
     return (cache?.graph.nodes ?? []).filter((node) => !term || `${node.label} ${node.entity_type} ${node.platform_urn ?? ""}`.toLowerCase().includes(term));
   }, [cache, query]);
-  const visible = new Set(nodes.map((node) => node.urn));
+  const visible = useMemo(() => new Set(nodes.map((node) => node.urn)), [nodes]);
   const edges = useMemo(() => (cache?.graph.edges ?? []).filter((edge) => visible.has(edge.source_urn) && visible.has(edge.target_urn)), [cache, visible]);
-  const graphData = useMemo(() => ({ nodes: nodes.map((node) => ({ ...node, id: node.urn })), links: edges.map((edge) => ({ source: edge.source_urn, target: edge.target_urn, label: `${edge.direction} · ${edge.hops} hop(s)` })) }), [nodes, edges]);
+  const graphData = useMemo(() => {
+    const stabilized = stabilizeCatalogGraphData(stableGraph.current, nodes, edges);
+    stableGraph.current = stabilized;
+    return stabilized.data;
+  }, [nodes, edges]);
 
   async function refresh() {
     setBusy(true); setError(null);

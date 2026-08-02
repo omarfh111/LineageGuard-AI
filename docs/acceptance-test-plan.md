@@ -33,7 +33,11 @@ Pop-Location
 python .\evals\runners\run_agentic_rag_evals.py
 ```
 
-For a live, read-only benchmark, run each scenario in a fresh session or with memory disabled. Store JSON evidence in an untracked `evidence/` folder. Review `relevant_urns` manually before interpreting retrieval metrics.
+For a live, read-only benchmark, run each scenario in a fresh session or with
+memory disabled. Generate a new immutable JSON artifact under
+`evals/evidence/`; never overwrite a prior result. Review `relevant_urns`
+manually before interpreting retrieval metrics, and inspect the artifact for
+sensitive metadata before publishing it.
 
 The committed professional dataset and runner are reproducible with:
 
@@ -42,8 +46,8 @@ python .\evals\runners\run_live_agentic_evals.py --timeout-seconds 85
 python .\evals\runners\run_live_governed_writeback.py
 ```
 
-The latest reviewed result is
-[`../evals/reports/professional-validation-2026-07-31.md`](../evals/reports/professional-validation-2026-07-31.md).
+The latest reviewed professional result is
+[`../evals/reports/p0-professional-validation-2026-08-01.md`](../evals/reports/p0-professional-validation-2026-08-01.md).
 
 ## 3. Acceptance matrix
 
@@ -130,6 +134,7 @@ Keep these artifacts untracked or outside the repository, after checking that th
 9. Optional disposable live-write proof with created and superseded document evidence.
 
 The 30-case professional result in
-[`../evals/reports/professional-validation-2026-07-31.md`](../evals/reports/professional-validation-2026-07-31.md)
+[`../evals/reports/p0-professional-validation-2026-08-01.md`](../evals/reports/p0-professional-validation-2026-08-01.md)
 is the current acceptance benchmark. The older six-scenario showcase report is
-retained only as a historical smoke baseline.
+retained only as a historical smoke baseline. Before submission, execute the
+[release checklist](submission-checklist.md) against the exact pushed commit.

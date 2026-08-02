@@ -31,6 +31,23 @@ Confirm that Docker Desktop shows **Engine running**. If it reports missing virt
 | No DataHub UI on port 9002 | Quickstart stopped | Run `./scripts/start-datahub.ps1` |
 | Empty catalog or missing sample asset | Datapack not loaded | Run `./scripts/load-showcase-data.ps1` |
 
+If `start-datahub.ps1` reports that `datahub-gms-quickstart` is unhealthy, do
+not start LineageGuard against the half-ready stack. Inspect the GMS logs and
+the dependency health first:
+
+```powershell
+docker ps --format "table {{.Names}}\t{{.Status}}"
+docker logs datahub-datahub-gms-quickstart-1 --tail 200
+docker logs datahub-mysql-1 --tail 100
+docker logs datahub-opensearch-1 --tail 100
+docker logs datahub-kafka-broker-1 --tail 100
+```
+
+Common causes are insufficient Docker memory, an interrupted first-time image
+or migration startup, and unhealthy MySQL/OpenSearch/Kafka dependencies. Fix
+the dependency, rerun `start-datahub.ps1`, and require a healthy GMS rather
+than bypassing the script's safety check.
+
 ## 3D catalog stays on RUNNING
 
 At a backend restart, `RUNNING` is normal only until the bounded root catalog loads. Once assets are available, the status should change to `READY` with a message that lineage relationships are still enriching. The graph remains usable during enrichment.
@@ -77,9 +94,16 @@ Clear memory before independent test cases. Normal six-turn memory helps convers
 The advisory critic is bounded to a compact dossier and a maximum response size. A timeout is surfaced explicitly and cannot change the remediation plan.
 
 1. Confirm the configured model is available to the NVIDIA account.
-2. Prefer a faster available model for a demo if the chosen large model repeatedly times out.
+2. Use `NVIDIA_CRITIC_MODEL=nvidia/nemotron-3-nano-30b-a3b` for the interactive demo. It passed the repository's live contract test in 2.92 seconds on 2026-08-01.
 3. Confirm `NVIDIA_TIMEOUT_SECONDS` is appropriate for the model.
 4. Retry once later; do not treat a failed advisory call as a passing review.
+
+Do not use `z-ai/glm-5.2` as the interactive critic on the shared endpoint unless
+a rehearsal succeeds: two live attempts timed out at 90 seconds even with
+reasoning disabled and streaming enabled. It can remain the worker model.
+Model availability also changes: query the NVIDIA account rather than trusting
+an old model name. The previously documented Qwen critic endpoints returned
+HTTP 410 during the 2026-08-01 validation.
 
 NVIDIA’s endpoint is OpenAI-compatible; the expected base URL is `https://integrate.api.nvidia.com/v1` ([NVIDIA API reference](https://docs.api.nvidia.com/nim/reference/llm-apis)).
 
@@ -100,6 +124,8 @@ An unavailable judge never becomes PASS. One unavailable judge produces `AWAITIN
 | Prepare request rejected | Gate 0 or double PASS is absent |
 | `Unknown server-owned judging run` | Invalid or non-persistent run ID |
 | `FAILED` | Document write was attempted only after approval and failed; inspect the audit trail |
+| `reviewer_unconfigured` | Feature flag is enabled but the running backend did not receive a 24+ character server capability |
+| `A valid local reviewer capability is required` | The tab value is missing/different, or the backend was not recreated after `.env` changed |
 
 Read proposal and audit data with:
 
@@ -109,3 +135,27 @@ Invoke-RestMethod "http://localhost:8000/api/v1/writebacks/<run_id>/audit"
 ```
 
 Keep `DATAHUB_WRITEBACK_ENABLED=false` for ordinary hackathon demonstrations. Use the dedicated disposable proof only when you explicitly intend to create and supersede a demo Analysis document.
+
+For the isolated proof, set only:
+
+```env
+DATAHUB_WRITEBACK_ENABLED=true
+LOCAL_REVIEWER_CAPABILITY=<same random 24+ character value entered in the UI>
+```
+
+Then run `docker compose up --build -d backend`, verify
+`/api/v1/health` reports `writeback: ready`, and enter the exact same value in
+the current browser tab. Do **not** globally enable
+`DATAHUB_MUTATIONS_ENABLED` or `TOOLS_IS_MUTATION_ENABLED`; the normal MCP
+server must stay read-only.
+
+## Local test process or temporary-directory errors
+
+`spawn EPERM` from Vite/esbuild or `PermissionError` under a Windows pytest
+temporary directory is an execution-environment restriction, not a passing or
+failing application assertion. Close processes locking the directory and rerun
+from a normal PowerShell terminal. If pytest's default temp root is locked, use
+an explicit newly created writable base directory outside a synchronized or
+protected folder, then remove it after the run. Do not record an infrastructure
+error as a test failure, and do not claim PASS until the same command completes
+normally.

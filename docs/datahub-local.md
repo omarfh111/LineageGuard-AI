@@ -22,6 +22,12 @@ To reload the official sample metadata without restarting DataHub:
 
 The loader skips only aspects rejected by the local DataHub version; it reports each skipped aspect and ingests every compatible official proposal.
 
+The showcase graph contains metadata labelled with platforms such as
+Snowflake, PostgreSQL, S3, dbt, Looker, Power BI, and Tableau. Those labels do
+not mean LineageGuard starts each source system or ingests its business rows.
+The datapack supplies representative entities, schemas, governance, and
+cross-platform lineage inside DataHub; LineageGuard reads that metadata graph.
+
 ## Configure the MCP bridge
 
 Create a personal access token from the DataHub UI, then keep it only in the ignored `.env` file:
@@ -46,6 +52,10 @@ Start the LineageGuard containers, then use the OpenAPI UI at <http://localhost:
 - `GET /api/v1/datahub/lineage?asset_urn=<dataset-urn-from-search>&direction=DOWNSTREAM&max_hops=3`
 
 The service invokes the official self-hosted DataHub MCP server as an isolated subprocess. It allowlists only read tools; mutation flags remain disabled.
+
+For the separately documented Analysis-document proof, do not change these
+global flags. The backend constructs a scoped writer subprocess only after all
+write-back gates pass. See [Secure HITL write-back](hitl-writeback.md).
 
 Run the automated end-to-end check after both DataHub and LineageGuard containers are healthy:
 

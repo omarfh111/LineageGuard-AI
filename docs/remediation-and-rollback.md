@@ -1,6 +1,6 @@
 # Remediation and business rollback
 
-`POST /api/v1/remediations/plan` transforms a validated Phase 2 `ImpactReport` into a deterministic `RemediationPlan`.
+`POST /api/v1/remediations/plan` transforms a validated `ImpactReport` into a deterministic `RemediationPlan`.
 
 The endpoint does not execute SQL, dbt, warehouse migrations, DataHub mutations, or rollback operations. Both the plan and its business rollback use `execution_status: NOT_EXECUTED`.
 

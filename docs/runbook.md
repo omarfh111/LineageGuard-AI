@@ -9,9 +9,10 @@ From the repository root:
 ```powershell
 Copy-Item .env.example .env
 python -m venv backend\.venv
+.\backend\.venv\Scripts\Activate.ps1
 backend\.venv\Scripts\python.exe -m pip install -e "backend[dev]"
 Push-Location frontend
-npm install
+npm ci
 Pop-Location
 
 docker version
@@ -93,7 +94,9 @@ Do not expect the **Load 50 more assets** control when the cache already holds e
 
 For a timed presentation, run `./scripts/demo-preflight.ps1` and use the
 [reliable five-minute demonstration](five-minute-demo.md). The longer procedure
-below is the full operator walkthrough, not the on-stage script.
+below is the full operator walkthrough, not the recorded Devpost submission.
+The public submission video must stay under three minutes; use the
+[submission storyboard](submission-checklist.md#under-three-minute-video-storyboard).
 
 1. Confirm DataHub, Qdrant, and provider configuration through `/api/v1/health`.
 2. Open the 3D catalog; wait until its asset count is non-zero and the status says `READY`.
@@ -119,6 +122,20 @@ and rebuild the backend. Enter that same capability in the password field shown
 after a double PASS. Never use a `VITE_*` variable for this secret and never
 commit it. `/api/v1/health` reports only `disabled`,
 `reviewer_unconfigured`, or `ready`.
+
+The opt-in shape is:
+
+```env
+DATAHUB_WRITEBACK_ENABLED=true
+LOCAL_REVIEWER_CAPABILITY=<random value with at least 24 characters>
+```
+
+Keep `DATAHUB_MUTATIONS_ENABLED=false` and
+`TOOLS_IS_MUTATION_ENABLED=false`. The normal MCP server must remain read-only;
+LineageGuard creates a separately scoped writer subprocess only after Gate 0,
+double PASS, the feature flag, the reviewer capability, and explicit approval.
+After the proof, restore `DATAHUB_WRITEBACK_ENABLED=false` and recreate the
+backend container.
 
 ## 7. Tracing and operational observability
 
@@ -165,3 +182,7 @@ python .\evals\runners\run_agentic_rag_evals.py
 ```
 
 Run the professional acceptance plan before submission. It includes the tests that must be manually evidenced: full catalog cache, schema and lineage grounding, no-proof refusal, memory isolation, safety routing, independent judges, and optional write proof.
+
+For a final release, run these commands on the exact commit that will be
+submitted, create new immutable evidence instead of overwriting a previous
+report, and complete the [submission checklist](submission-checklist.md).

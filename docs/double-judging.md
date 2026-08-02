@@ -109,8 +109,14 @@ JUDGE_MAX_RETRIES=1
 
 NVIDIA_API_KEY=
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
-NVIDIA_CRITIC_MODEL=
+NVIDIA_CRITIC_MODEL=nvidia/nemotron-3-nano-30b-a3b
 NVIDIA_TIMEOUT_SECONDS=90
 ```
 
 Choose only models available to the corresponding account. A changed model is a material evaluation change: record it beside every benchmark result and do not compare its score directly with a previous model without disclosure.
+
+The NVIDIA critic is advisory and is intentionally distinct from the worker.
+Its response is streamed with reasoning disabled, normalized conservatively,
+restricted to evidence IDs present in the dossier, and validated by Pydantic.
+One schema-only repair may run within the original total timeout. A timeout or
+invalid response never changes the deterministic remediation plan.

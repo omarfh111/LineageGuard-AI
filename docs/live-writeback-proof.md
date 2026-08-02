@@ -78,11 +78,19 @@ enable `DATAHUB_WRITEBACK_ENABLED=true` for that backend instance and run:
 python .\evals\runners\run_live_governed_writeback.py --execute
 ```
 
+For the browser/API path, also configure a random
+`LOCAL_REVIEWER_CAPABILITY` of at least 24 characters, recreate the backend,
+and enter the same value manually in the current tab. Do not set it through a
+`VITE_*` variable. Keep the normal global MCP mutation flags false; the
+application owns a separate `save_document`-only writer process.
+
 The runner requires deterministic PASS, OpenAI PASS, Groq PASS, and aggregate
 `FINALIZE_READ_ONLY`; then it prepares an idempotent proposal, approves it,
 verifies `COMPLETED`, compensates the same persisted document URN, verifies
 `ROLLED_BACK`, and checks the exact six-event audit sequence. Compensation
 supersedes the Analysis document; it does not erase audit history.
 
-The reviewed 2026-07-31 execution and non-secret artifact identifiers are in
-[`../evals/reports/professional-validation-2026-07-31.md`](../evals/reports/professional-validation-2026-07-31.md).
+The latest consolidated reviewed execution and non-secret artifact identifiers
+are in
+[`../evals/reports/p0-professional-validation-2026-08-01.md`](../evals/reports/p0-professional-validation-2026-08-01.md).
+The earlier 2026-07-31 report remains preserved as historical evidence.

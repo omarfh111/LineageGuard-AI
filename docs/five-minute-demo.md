@@ -2,6 +2,11 @@
 
 This is the judge-facing path. It demonstrates real DataHub reads, hybrid retrieval, deterministic impact analysis, independent review controls, and safe human approval without depending on an unprepared external provider.
 
+This script is for a live walkthrough with questions. It is **not** the
+Devpost video script: the official submission video must be under three
+minutes. Use the [2:40–2:55 submission storyboard](submission-checklist.md#under-three-minute-video-storyboard)
+for the recorded entry.
+
 ## Before the clock starts
 
 1. Start DataHub and LineageGuard. Do not restart either stack during the demo.

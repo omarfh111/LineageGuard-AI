@@ -10,15 +10,58 @@ flowchart TB
     Web --> API["FastAPI backend"]
     API --> SQLite["SQLite: runs, proposals, audit, memory"]
     API --> Qdrant["Qdrant: metadata projections"]
-    API --> MCP["DataHub MCP subprocess"]
-    MCP --> GMS["DataHub GMS / Core"]
+    API --> ReadMCP["DataHub MCP read subprocess<br/>fixed allowlist"]
+    ReadMCP --> GMS["DataHub GMS / Core"]
+    API --> Gates["Gate 0 + double judge + HITL"]
+    Gates -. "enabled + capability + approved" .-> WriteMCP["Isolated DataHub MCP writer<br/>save_document only"]
+    WriteMCP -. "Analysis document" .-> GMS
     API -. "optional, user-triggered" .-> Nvidia["NVIDIA Build"]
     API -. "optional, user-triggered" .-> OpenAI["OpenAI"]
     API -. "optional, user-triggered" .-> Groq["Groq"]
     API -. "optional tracing" .-> LangSmith["LangSmith"]
 ```
 
-The browser talks only to the FastAPI API. It never receives a DataHub token, a provider key, raw MCP server environment, or a write-capable MCP client.
+The browser talks only to the FastAPI API. It never receives a DataHub token,
+a provider key, raw MCP server environment, or a write-capable MCP client. The
+normal MCP process has mutation and document tools disabled. The separate
+writer process is constructed only after all server and human gates pass and
+exposes only `save_document` for the exact proposal.
+
+### Deployment topology
+
+```mermaid
+flowchart LR
+    subgraph App["LineageGuard Docker Compose"]
+        Frontend["frontend :5173"]
+        Backend["backend :8000"]
+        Vector["Qdrant :6333"]
+        Volume1[("SQLite volume")]
+        Volume2[("Qdrant volume")]
+        Frontend --> Backend
+        Backend --> Vector
+        Backend --> Volume1
+        Vector --> Volume2
+    end
+
+    subgraph DataHub["Local DataHub Quickstart"]
+        UI["DataHub UI :9002"]
+        GMS2["GMS :8080"]
+        Search["OpenSearch"]
+        DB["MySQL"]
+        Kafka["Kafka"]
+        UI --> GMS2
+        GMS2 --> Search
+        GMS2 --> DB
+        GMS2 --> Kafka
+    end
+
+    Backend -->|"host.docker.internal:8080"| GMS2
+```
+
+The two Compose projects are intentionally separate. PostgreSQL, Snowflake,
+Power BI, S3, dbt, Looker, and Tableau labels in the showcase graph are
+metadata platforms represented by the datapack; LineageGuard does not start
+those systems as containers or copy their business rows.
 
 ## Main workflows
 
@@ -40,7 +83,8 @@ flowchart LR
     Aggregate -->|"double threshold PASS"| Proposal["Prepare HITL proposal"]
     Aggregate -->|"otherwise"| Review["Repair or human review"]
     Proposal --> Human{"Human decision"}
-    Human -->|"approve + enabled + local capability"| Save["DataHub Analysis document only"]
+    Human -->|"approve + enabled + local capability"| Writer2["CAS claim + isolated MCP writer"]
+    Writer2 --> Save["DataHub Analysis document only"]
     Human -->|"reject / revise"| Audit["Persist audit event"]
 ```
 
@@ -132,6 +176,20 @@ The API maintains an in-memory root-URN fingerprint separate from the enriched g
 | Memory turns | 6 | Keeps contextual carry-over small and auditable |
 | Tool retry | 1 bounded retry | Allows recovery without target substitution or loops |
 | Judge retries | Environment-controlled | Avoids uncontrolled external cost |
+
+## Failure containment
+
+| Failure | Contained outcome |
+|---|---|
+| DataHub MCP timeout | Request becomes limited/stale; no target handoff or partial graph replacement |
+| Qdrant unavailable | Live MCP may still answer bounded reads; Qdrant never becomes evidence |
+| Chat model timeout | Deterministic evidence fallback or safe limitation |
+| NVIDIA failure | Advisory error only; deterministic report is unchanged |
+| One final judge unavailable | No double PASS; workflow remains human/read-only |
+| Duplicate approval | One local CAS claimant; other caller observes existing state |
+| Unknown remote create outcome | `WRITEBACK_UNCERTAIN`; automatic retries blocked |
+| Compensation uncertainty | Exact document remains bound; new explicit decision required |
+| Backend restart | SQLite/Qdrant persist; 3D in-memory cache reloads; browser restores only an immutable read-only analysis UUID |
 
 ## Observability
 
