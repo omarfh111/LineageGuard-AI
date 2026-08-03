@@ -90,6 +90,38 @@ function tone(value?: string) {
   return "warn";
 }
 
+function decisionPresentation(decision?: string) {
+  if (decision === "FINALIZE_READ_ONLY") return {
+    eyebrow: "INDEPENDENT REVIEW COMPLETE",
+    title: "The report passed both independent reviews",
+    status: "READY FOR HUMAN REVIEW",
+    explanation: "The evidence and remediation plan passed both judges. No DataHub write has occurred; a human reviewer must explicitly authorize the next step.",
+  };
+  if (!decision) return {
+    eyebrow: "INDEPENDENT REVIEW",
+    title: "Review could not reach a decision",
+    status: "BLOCKED",
+    explanation: "The workflow remains read-only until a complete, valid review is available.",
+  };
+  return {
+    eyebrow: "INDEPENDENT REVIEW",
+    title: "The report needs attention",
+    status: decision.replaceAll("_", " "),
+    explanation: "The workflow remains read-only. Address the review findings before asking for human approval.",
+  };
+}
+
+function scoreLabel(name: string) {
+  const labels: Record<string, string> = {
+    grounding: "Evidence grounding",
+    technical_correctness: "Technical accuracy",
+    completeness: "Completeness",
+    safety: "Safety",
+    actionability: "Actionability",
+  };
+  return labels[name] ?? name.replaceAll("_", " ");
+}
+
 export default function GovernedReview({
   health,
   onBack,
@@ -262,7 +294,6 @@ export default function GovernedReview({
 
   const impact = execution.impact_report;
   const plan = execution.remediation_plan;
-  const decision = judging?.result.aggregate_decision;
   return <section className="page-content integration-page governed-review">
     <div className="page-heading"><div><p className="overline">EVIDENCE → REVIEW → HUMAN CONTROL</p><h1>Governed review</h1><p>One focused path from the immutable impact report to optional external review and explicit HITL.</p></div><button className="ghost" onClick={onBack}>Back to analysis</button></div>
     {error && <div className="review-banner error" role="alert">{error}</div>}
@@ -283,9 +314,60 @@ export default function GovernedReview({
         <button className="cta" onClick={runJudges} disabled={busy !== null || !judgesAvailable} title={judgesAvailable ? "Run both independent judges" : [!openaiAvailable && providerReason(health, "openai_judge"), !groqAvailable && providerReason(health, "groq_judge")].filter(Boolean).join(" ")}>{busy === "judges" ? "Reviewing…" : judgesAvailable ? "Run independent judges" : "Judges unavailable"}</button>
       </ProviderAction>
     </section>
-    {critique && <section className="review-card result"><span>ADVISORY · {critique.model}</span><h2>{critique.summary}</h2><p>Confidence {Math.round(critique.confidence * 100)}%</p>{critique.issues.map((issue, index) => <p key={`${issue.finding}-${index}`}><b>{issue.severity}:</b> {issue.finding}</p>)}</section>}
-    {judging && <section className="review-card result"><span>INDEPENDENT REVIEW</span><h2>{decision?.decision ?? "Gate 0 blocked"}</h2>{!judging.result.deterministic_validation.passed && <p className="review-critical">{judging.result.deterministic_validation.errors.join(" · ")}</p>}<div className="judge-grid-simple">{[judging.result.openai_verdict, judging.result.groq_verdict].map((verdict) => verdict && <JudgeCard key={verdict.judge_provider} verdict={verdict} />)}</div><p>{decision?.rationale}</p>{decision?.decision === "FINALIZE_READ_ONLY" && <ReviewerGate health={health} capability={reviewerCapability} setCapability={setReviewerCapability} busy={busy} onPrepare={prepareWriteback} />}</section>}
+    {critique && <AdvisoryResult critique={critique} />}
+    {judging && <IndependentReviewResult judging={judging} health={health} capability={reviewerCapability} setCapability={setReviewerCapability} busy={busy} onPrepare={prepareWriteback} />}
     {proposal && <section className="review-card result"><span>HUMAN-IN-THE-LOOP</span><h2>{proposal.status}</h2><p>Allowed mutation: {proposal.allowed_mutations.join(", ")}</p><details><summary>Review the proposed document and immutable snapshot</summary><pre>{proposal.document_content}</pre><pre>{JSON.stringify(proposal.snapshot, null, 2)}</pre></details>{proposal.status === "PENDING_APPROVAL" && <label>Reviewer rationale<textarea value={decisionComment} onChange={(event) => setDecisionComment(event.target.value)} minLength={3} /></label>}<div className="review-actions"><button className="cta" onClick={() => decide("APPROVE_REPORT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || decisionComment.trim().length < 3}>Approve controlled write</button><button className="ghost" onClick={() => decide("REQUEST_REVISION")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || decisionComment.trim().length < 3}>Request revision</button><button className="danger" onClick={() => decide("REJECT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || decisionComment.trim().length < 3}>Reject</button>{["COMPLETED", "ROLLBACK_UNCERTAIN"].includes(proposal.status) && <button className="danger" onClick={rollback} disabled={busy !== null}>Approve compensation</button>}{["WRITEBACK_UNCERTAIN", "FAILED"].includes(proposal.status) && <><button className="ghost" onClick={() => reconcile("ADOPT_COMPLETED_DOCUMENT")} disabled={busy !== null}>Adopt verified document</button><button className="danger" onClick={() => reconcile("CONFIRM_NO_DOCUMENT_CREATED")} disabled={busy !== null}>Confirm no document and re-authorize</button></>}</div></section>}
+  </section>;
+}
+
+function AdvisoryResult({ critique }: { critique: Critique }) {
+  return <section className="review-card result advisory-result">
+    <div className="result-heading">
+      <div><span>OPTIONAL ADVISORY</span><h2>NVIDIA critique</h2></div>
+      <span className="confidence-pill">{Math.round(critique.confidence * 100)}% confidence</span>
+    </div>
+    <p className="advisory-summary">{critique.summary}</p>
+    {critique.issues.length > 0 && <details>
+      <summary>Review advisory findings ({critique.issues.length})</summary>
+      {critique.issues.map((issue, index) => <p key={`${issue.finding}-${index}`}><b>{issue.severity}:</b> {issue.finding}</p>)}
+    </details>}
+    <small className="model-note">Model: {critique.model} · Advisory only; this result cannot authorize a write.</small>
+  </section>;
+}
+
+function IndependentReviewResult({
+  judging,
+  health,
+  capability,
+  setCapability,
+  busy,
+  onPrepare,
+}: {
+  judging: StoredJudging;
+  health: RuntimeHealth | null;
+  capability: string;
+  setCapability: (value: string) => void;
+  busy: string | null;
+  onPrepare: () => void;
+}) {
+  const decision = judging.result.aggregate_decision;
+  const presentation = decisionPresentation(decision?.decision);
+  const verdicts = [judging.result.openai_verdict, judging.result.groq_verdict];
+
+  return <section className="review-card result independent-result">
+    <div className="decision-header">
+      <div><span>{presentation.eyebrow}</span><h2>{presentation.title}</h2></div>
+      <span className={`decision-pill ${tone(decision?.decision)}`}>{presentation.status}</span>
+    </div>
+    <p className="decision-explanation">{presentation.explanation}</p>
+    {!judging.result.deterministic_validation.passed && <p className="review-critical">{judging.result.deterministic_validation.errors.join(" · ")}</p>}
+    <div className="review-progress" aria-label="Governed review progress">
+      <span className="complete"><b>1</b> Report locked</span>
+      <span className="complete"><b>2</b> Judges passed</span>
+      <span><b>3</b> Human decision</span>
+    </div>
+    <div className="judge-grid-simple">{verdicts.map((verdict) => verdict && <JudgeCard key={verdict.judge_provider} verdict={verdict} />)}</div>
+    {decision?.decision === "FINALIZE_READ_ONLY" && <ReviewerGate health={health} capability={capability} setCapability={setCapability} busy={busy} onPrepare={onPrepare} />}
   </section>;
 }
 
@@ -296,9 +378,10 @@ function ProviderAction({ title, readiness, children }: { title: string; readine
 function ReviewerGate({ health, capability, setCapability, busy, onPrepare }: { health: RuntimeHealth | null; capability: string; setCapability: (value: string) => void; busy: string | null; onPrepare: () => void }) {
   if (health?.writeback === "disabled") return <p className="review-banner notice">Write-back is disabled. The verified report remains read-only.</p>;
   if (health?.writeback !== "ready") return <p className="review-banner error">The local reviewer capability is not configured; write routes remain locked.</p>;
-  return <div className="reviewer-gate-simple"><label>Local reviewer capability<input type="password" value={capability} onChange={(event) => setCapability(event.target.value)} autoComplete="off" /></label><button className="ghost" onClick={onPrepare} disabled={busy !== null || capability.length < 24}>Prepare HITL proposal</button><small>This value stays in this tab and is never returned by the API.</small></div>;
+  return <section className="reviewer-gate-simple"><div className="reviewer-copy"><span>HUMAN APPROVAL REQUIRED</span><h3>Unlock the review proposal</h3><p>Enter the same local reviewer capability configured on the backend. This prepares a proposal for inspection; it does not write to DataHub.</p></div><label>Reviewer capability<input type="password" value={capability} onChange={(event) => setCapability(event.target.value)} autoComplete="off" placeholder="Enter the configured local capability" /></label><button className="cta" onClick={onPrepare} disabled={busy !== null || capability.length < 24}>{busy === "prepare" ? "Preparing…" : "Prepare human review proposal"}</button><small>Security: the value stays in this browser tab and is never returned by the API.</small></section>;
 }
 
 function JudgeCard({ verdict }: { verdict: Verdict }) {
-  return <article className="judge-card-simple"><div><b>{verdict.judge_provider}</b><span className={`review-badge ${tone(verdict.verdict)}`}>{verdict.verdict}</span></div><small>{verdict.judge_model} · {Math.round(verdict.confidence * 100)}% confidence</small><div>{Object.entries(verdict.scores).map(([name, score]) => <span key={name}>{name.replaceAll("_", " ")} <b>{score}/5</b></span>)}</div>{verdict.critical_errors.length > 0 && <p className="review-critical">{verdict.critical_errors.join(" · ")}</p>}{verdict.audit_rationale.length > 0 && <details><summary>Auditable rationale</summary><ul>{verdict.audit_rationale.map((line) => <li key={line}>{line}</li>)}</ul></details>}</article>;
+  const provider = verdict.judge_provider === "openai" ? "OpenAI" : verdict.judge_provider === "groq" ? "Groq" : verdict.judge_provider;
+  return <article className="judge-card-simple"><header><div><span>INDEPENDENT JUDGE</span><h3>{provider}</h3><small>{verdict.judge_model}</small></div><div className="judge-verdict"><span className={`review-badge ${tone(verdict.verdict)}`}>{verdict.verdict}</span><b>{Math.round(verdict.confidence * 100)}%</b><small>confidence</small></div></header><div className="judge-scores">{Object.entries(verdict.scores).map(([name, score]) => <div key={name}><span>{scoreLabel(name)}</span><div className="score-track"><i style={{ width: `${Math.max(0, Math.min(5, score)) * 20}%` }} /></div><b>{score}/5</b></div>)}</div>{verdict.critical_errors.length > 0 && <p className="review-critical">{verdict.critical_errors.join(" · ")}</p>}{verdict.audit_rationale.length > 0 && <details><summary>Why this judge reached its verdict</summary><ul>{verdict.audit_rationale.map((line, index) => <li key={`${index}-${line}`}>{line}</li>)}</ul></details>}</article>;
 }

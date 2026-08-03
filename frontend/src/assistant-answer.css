@@ -1,0 +1,265 @@
+.live-answer {
+  padding: 24px;
+  color: #283650;
+  font-size: 13px;
+}
+
+.answer-hero {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #e5ebf3;
+}
+
+.answer-hero h2,
+.answer-hero p {
+  margin: 0;
+}
+
+.answer-hero h2 {
+  color: #15213b;
+  font-size: 20px;
+}
+
+.answer-hero p {
+  margin-top: 4px;
+  color: #697791;
+  font-size: 12px;
+}
+
+.answer-outcome {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: #def8ec;
+  color: #237457;
+  font: 700 9px "DM Mono", monospace;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.answer-outcome.limited {
+  background: #fff1d4;
+  color: #855f12;
+}
+
+.resolved-asset {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 18px 0;
+  padding: 15px 17px;
+  border: 1px solid #dfe6fb;
+  border-left: 4px solid #6175e8;
+  border-radius: 10px;
+  background: #f5f7ff;
+}
+
+.resolved-asset span {
+  color: #6675a7;
+  font: 700 9px "DM Mono", monospace;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.resolved-asset h3,
+.resolved-asset p {
+  margin: 3px 0 0;
+}
+
+.resolved-asset h3 {
+  color: #17254a;
+  font-size: 17px;
+}
+
+.resolved-asset p {
+  color: #67748c;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.resolved-asset details {
+  max-width: 54%;
+  margin: 0;
+  text-align: right;
+}
+
+.resolved-asset summary,
+.evidence-details summary,
+.verification-trace summary {
+  cursor: pointer;
+  color: #4e61b8;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.resolved-asset code {
+  display: block;
+  margin-top: 8px;
+  padding: 8px;
+  border-radius: 7px;
+  background: #fff;
+  color: #546484;
+  font: 9px "DM Mono", monospace;
+  overflow-wrap: anywhere;
+}
+
+.answer-content > p {
+  margin: 0 0 17px;
+  color: #45536e;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.section-title h3 {
+  margin: 0;
+  color: #1b2946;
+  font-size: 15px;
+}
+
+.section-title span {
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #eef1f8;
+  color: #68758f;
+  font-size: 10px;
+}
+
+.schema-table {
+  max-height: 330px;
+  overflow: hidden;
+  overflow-y: auto;
+  border: 1px solid #e0e6ef;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.schema-row {
+  display: grid;
+  grid-template-columns: minmax(170px, 1fr) minmax(190px, 1fr);
+  border-top: 1px solid #edf0f5;
+}
+
+.schema-row:first-child {
+  border-top: 0;
+}
+
+.schema-row > * {
+  padding: 9px 12px;
+}
+
+.schema-row code {
+  color: #33468b;
+  font: 10px "DM Mono", monospace;
+}
+
+.schema-row > span {
+  color: #596780;
+  font-size: 11px;
+}
+
+.schema-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f5f7fb;
+  color: #68758d;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.evidence-check {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 17px;
+  padding: 13px 15px;
+  border-radius: 10px;
+  background: #effaf6;
+}
+
+.coverage-ring {
+  display: grid;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 3px solid #59c5a4;
+  border-radius: 50%;
+  color: #24765d;
+  font: 700 10px "DM Mono", monospace;
+}
+
+.evidence-check div:last-child {
+  display: grid;
+  gap: 3px;
+}
+
+.evidence-check b {
+  color: #235f4f;
+}
+
+.evidence-check span {
+  color: #5c786f;
+  font-size: 11px;
+}
+
+.evidence-details,
+.verification-trace {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #e7ebf2;
+}
+
+.verification-trace p {
+  display: grid;
+  grid-template-columns: 160px 90px 1fr;
+  gap: 10px;
+  margin: 8px 0;
+  color: #66728a;
+}
+
+.verification-trace p span {
+  color: #27745c;
+  font: 700 9px "DM Mono", monospace;
+}
+
+.verification-trace p small {
+  color: #6c7890;
+  font-size: 10px;
+}
+
+@media (max-width: 700px) {
+  .answer-hero,
+  .resolved-asset {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .resolved-asset details {
+    max-width: 100%;
+    text-align: left;
+  }
+
+  .schema-row {
+    grid-template-columns: 1fr;
+  }
+
+  .schema-row > span {
+    padding-top: 0;
+  }
+
+  .verification-trace p {
+    grid-template-columns: 1fr;
+  }
+}
