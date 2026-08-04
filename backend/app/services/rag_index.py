@@ -133,7 +133,10 @@ class QdrantMetadataIndex:
         self._datahub = client
         self._settings = settings or get_settings()
         self._embeddings = embeddings or _embedding_provider(self._settings)
-        self._qdrant = AsyncQdrantClient(url=self._settings.qdrant_url)
+        self._qdrant = AsyncQdrantClient(
+            url=self._settings.qdrant_url,
+            api_key=self._settings.qdrant_api_key,
+        )
 
     async def ingest(self, progress: Callable[[int, int], Awaitable[None]]) -> int:
         """Build and atomically publish one complete, stale-free snapshot."""
@@ -287,7 +290,10 @@ async def persisted_index_status(settings: Settings | None = None) -> RagIndexSt
     """
 
     current = settings or get_settings()
-    client = AsyncQdrantClient(url=current.qdrant_url)
+    client = AsyncQdrantClient(
+        url=current.qdrant_url,
+        api_key=current.qdrant_api_key,
+    )
     try:
         collection = await _query_collection(client, current.qdrant_collection)
         if collection is None:

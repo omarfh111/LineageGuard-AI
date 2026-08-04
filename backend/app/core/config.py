@@ -35,6 +35,7 @@ class Settings:
     langsmith_tracing_enabled: bool = False
     langsmith_project: str | None = None
     qdrant_url: str = "http://qdrant:6333"
+    qdrant_api_key: str | None = None
     qdrant_collection: str = "lineageguard_datahub"
     rag_embedding_model: str = "text-embedding-3-small"
     rag_embedding_provider: str = "openai"
@@ -92,6 +93,7 @@ def get_settings() -> Settings:
         ),
         langsmith_project=os.getenv("LANGSMITH_PROJECT") or os.getenv("LANGCHAIN_PROJECT") or None,
         qdrant_url=os.getenv("QDRANT_URL", "http://qdrant:6333").rstrip("/"),
+        qdrant_api_key=os.getenv("QDRANT_API_KEY") or None,
         qdrant_collection=os.getenv("QDRANT_COLLECTION", "lineageguard_datahub"),
         rag_embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small"),
         rag_embedding_provider=os.getenv("RAG_EMBEDDING_PROVIDER", "openai").strip().lower(),

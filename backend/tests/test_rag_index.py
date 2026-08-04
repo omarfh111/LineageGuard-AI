@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.config import Settings
+from app.services import rag_index as rag_index_module
 from app.services.rag_index import (
     DeterministicHashEmbeddingProvider,
     QdrantMetadataIndex,
@@ -18,6 +19,7 @@ def settings() -> Settings:
         datahub_gms_url="http://datahub",
         datahub_gms_token=None,
         qdrant_url="http://qdrant",
+        qdrant_api_key="test-qdrant-key",
         qdrant_collection="rag_test",
         rag_embedding_provider="local_hash",
         rag_max_assets=10,
@@ -45,7 +47,7 @@ class MutableDataHub:
 
 
 class FakeQdrant:
-    def __init__(self) -> None:
+    def __init__(self, **_: object) -> None:
         self.collections: dict[str, dict[str, object]] = {}
         self.aliases: dict[str, str] = {}
 
@@ -108,7 +110,14 @@ async def no_progress(_: int, __: int) -> None:
 
 
 @pytest.mark.asyncio
-async def test_reindex_atomically_removes_stale_qdrant_records() -> None:
+async def test_reindex_atomically_removes_stale_qdrant_records(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        rag_index_module,
+        "AsyncQdrantClient",
+        FakeQdrant,
+    )
     datahub = MutableDataHub(["orders", "obsolete_orders"])
     qdrant = FakeQdrant()
     index = QdrantMetadataIndex(datahub, settings(), DeterministicHashEmbeddingProvider())  # type: ignore[arg-type]
@@ -128,7 +137,14 @@ async def test_reindex_atomically_removes_stale_qdrant_records() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failed_empty_rebuild_preserves_previous_active_snapshot() -> None:
+async def test_failed_empty_rebuild_preserves_previous_active_snapshot(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        rag_index_module,
+        "AsyncQdrantClient",
+        FakeQdrant,
+    )
     datahub = MutableDataHub(["orders"])
     qdrant = FakeQdrant()
     index = QdrantMetadataIndex(datahub, settings(), DeterministicHashEmbeddingProvider())  # type: ignore[arg-type]
@@ -143,3 +159,54 @@ async def test_failed_empty_rebuild_preserves_previous_active_snapshot() -> None
     assert qdrant.aliases[_active_alias("rag_test")] == active_before
     assert active_before in qdrant.collections
     assert not any("__snapshot__" in name and name != active_before for name in qdrant.collections)
+
+@pytest.mark.asyncio
+async def test_qdrant_api_key_is_forwarded_to_all_clients(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+
+    class CapturingClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.append(kwargs)
+
+        async def get_collection(self, _: str):
+            return SimpleNamespace(points_count=1)
+
+        async def close(self) -> None:
+            return None
+
+    async def fake_query_collection(
+        _: object,
+        collection: str,
+    ) -> str:
+        return collection
+
+    monkeypatch.setattr(
+        rag_index_module,
+        "AsyncQdrantClient",
+        CapturingClient,
+    )
+    monkeypatch.setattr(
+        rag_index_module,
+        "_query_collection",
+        fake_query_collection,
+    )
+
+    configured = settings()
+
+    QdrantMetadataIndex(
+        MutableDataHub([]),
+        configured,
+        DeterministicHashEmbeddingProvider(),
+    )
+    await rag_index_module.persisted_index_status(configured)
+
+    assert captured == [
+        {
+            "url": "http://qdrant",
+            "api_key": "test-qdrant-key",
+        },
+        {
+            "url": "http://qdrant",
+            "api_key": "test-qdrant-key",
+        },
+    ]

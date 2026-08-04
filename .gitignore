@@ -34,3 +34,7 @@ frontend/test-results/
 Thumbs.db
 .idea/
 .vscode/
+
+# Codespaces local runtime
+/.venv-datahub/
+/.data/
