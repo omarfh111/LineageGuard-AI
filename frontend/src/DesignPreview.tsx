@@ -1,4 +1,5 @@
 import { FormEvent, Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { browserRandomUuid } from "./browserId";
 import AppleHome from "./AppleHome";
 import AssistantAnswer, { type ChatReply } from "./AssistantAnswer";
 import GovernedReview from "./GovernedReview";
@@ -59,7 +60,7 @@ function chatSessionId() {
   const key = "lineageguard-chat-session";
   const current = window.localStorage.getItem(key);
   if (current) return current;
-  const created = crypto.randomUUID().replaceAll("-", "");
+  const created = browserRandomUuid().replaceAll("-", "");
   window.localStorage.setItem(key, created);
   return created;
 }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { browserRandomUuid } from "./browserId";
 
 import type { ChangeRequestPayload } from "./analysisFlow";
 import { clearAnalysisRun, loadAnalysisRun } from "./recovery";
@@ -214,7 +215,7 @@ export default function GovernedReview({
     if (!judging || health?.writeback !== "ready") return;
     setBusy("prepare"); setError(null);
     try {
-      const key = crypto.randomUUID();
+      const key = browserRandomUuid();
       const result = await request<Proposal>("/api/v1/writebacks/prepare", {
         run_id: judging.run_id,
         idempotency_key: key,

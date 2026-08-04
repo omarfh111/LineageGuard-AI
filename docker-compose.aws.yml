@@ -1,0 +1,11 @@
+services:
+  backend:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  qdrant:
+    restart: unless-stopped
+
+  frontend:
+    restart: unless-stopped

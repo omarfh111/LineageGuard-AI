@@ -14,7 +14,7 @@ from typing import Any, Literal, NotRequired, Protocol, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langsmith import traceable
 from openai import AsyncOpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.config import Settings, get_settings
 from app.datahub.mcp_client import DataHubMcpClient
@@ -75,6 +75,24 @@ class AgentPlan(BaseModel):
     need_schema: bool = False
     need_lineage: bool = False
     rationale: str = Field(min_length=1, max_length=300)
+
+    @field_validator("search_terms", mode="before")
+    @classmethod
+    def normalize_search_terms(cls, value: Any) -> Any:
+        """Accept provider output as either one string or a short string list."""
+
+        if isinstance(value, list):
+            terms = [
+                str(item).strip()
+                for item in value
+                if str(item).strip()
+            ]
+            return " ".join(terms)
+
+        if isinstance(value, str):
+            return value.strip()
+
+        return value
 
 
 class ChatCompletionProvider(Protocol):
@@ -403,7 +421,7 @@ class OpenAIPlanningProvider:
                             "role": "system",
                             "content": (
                                 "Create a bounded, read-only DataHub retrieval plan. Return JSON only with "
-                                "search_terms, need_schema, need_lineage, rationale. need_schema is true only "
+                                "search_terms, need_schema, need_lineage, rationale. search_terms must be one string, never an array. need_schema is true only "
                                 "when fields, columns, types, or schema are requested. need_lineage is true only "
                                 "when upstream/downstream/dependency/impact is requested. Never request writes."
                             ),
@@ -480,14 +498,29 @@ def _fallback_search_terms(question: str) -> str:
 _PLATFORMS = {"snowflake", "dbt", "postgres", "postgresql", "s3", "tableau", "powerbi", "looker", "spark"}
 
 
+
+def _extract_explicit_urn(question: str) -> str | None:
+    """Extract an explicit DataHub URN before interpreting pronouns."""
+    match = re.search(r"urn:li:[^\s`]+", question)
+    if not match:
+        return None
+    return match.group(0).rstrip(".,;:!?\"'")
+
+
 def _search_terms_for_question(question: str, planned_terms: str, active_asset: RagCitation | None) -> str:
     """Produce a stable DataHub query from user intent, never an LLM sentence."""
 
-    if re.search(r"\b(it|its|this asset|cet actif|son schéma|sa schema)\b", question, re.IGNORECASE) and active_asset:
+    explicit_urn = _extract_explicit_urn(question)
+    if explicit_urn:
+        return explicit_urn
+
+    if re.search(
+        r"\b(it|its|this asset|cet actif|son schéma|sa schema)\b",
+        question,
+        re.IGNORECASE,
+    ) and active_asset:
         return active_asset.label
-    urn_match = re.search(r"urn:li:[^\s`]+", question)
-    if urn_match:
-        return urn_match.group(0)
+
     # Schema-change requests commonly contain both a column identifier and an
     # asset identifier (for example, "rename old to new in dbt orders
     # dataset"). Prefer the noun immediately qualified as an asset so the new
@@ -551,20 +584,47 @@ def _resolve_target(
             detail="No current DataHub asset matched the requested target, so no schema or lineage tool was called.",
         )
     lowered = question.lower()
-    pronoun = bool(re.search(r"\b(it|its|this asset|cet actif|son schéma|sa schema)\b", lowered))
-    if pronoun:
-        if active_asset and any(item.urn == active_asset.urn for item in candidates):
-            return ChatTargetResolution(status="RESOLVED", detail=f"Resolved pronoun to the last verified asset: {active_asset.urn}", targets=[active_asset])
+
+    explicit_urn = _extract_explicit_urn(question)
+    if explicit_urn:
+        exact = [item for item in candidates if item.urn == explicit_urn]
+        if len(exact) == 1:
+            return ChatTargetResolution(
+                status="RESOLVED",
+                detail=f"Resolved explicit DataHub URN: {exact[0].urn}",
+                targets=exact,
+            )
         return ChatTargetResolution(
             status="NOT_FOUND",
-            detail="No current verified asset is available for this pronoun, so no schema or lineage tool was called.",
+            detail="The explicit DataHub URN was not returned by the current MCP search.",
         )
-    urn_match = re.search(r"urn:li:[^\s`]+", question)
-    if urn_match:
-        exact = [item for item in candidates if item.urn == urn_match.group(0)]
-        if len(exact) == 1:
-            return ChatTargetResolution(status="RESOLVED", detail=f"Resolved explicit DataHub URN: {exact[0].urn}", targets=exact)
-        return ChatTargetResolution(status="NOT_FOUND", detail="The explicit DataHub URN was not returned by the current MCP search.")
+
+    pronoun = bool(
+        re.search(
+            r"\b(it|its|this asset|cet actif|son schéma|sa schema)\b",
+            lowered,
+        )
+    )
+    if pronoun:
+        if active_asset and any(
+            item.urn == active_asset.urn for item in candidates
+        ):
+            return ChatTargetResolution(
+                status="RESOLVED",
+                detail=(
+                    "Resolved pronoun to the last verified asset: "
+                    f"{active_asset.urn}"
+                ),
+                targets=[active_asset],
+            )
+        return ChatTargetResolution(
+            status="NOT_FOUND",
+            detail=(
+                "No current verified asset is available for this pronoun, "
+                "so no schema or lineage tool was called."
+            ),
+        )
+
     platform = next((name for name in _PLATFORMS if re.search(rf"\b{re.escape(name)}\b", lowered)), None)
     filtered = candidates
     if platform:
@@ -625,9 +685,12 @@ def _qdrant_candidate_can_guide(
 def _has_exact_live_target(question: str, candidates: list[RagCitation]) -> bool:
     """Avoid extra vector-guided MCP work when live search already proves one target."""
 
-    urn_match = re.search(r"urn:li:[^\s`]+", question)
-    if urn_match:
-        return sum(item.urn == urn_match.group(0) for item in candidates) == 1
+    explicit_urn = _extract_explicit_urn(question)
+    if explicit_urn:
+        return sum(
+            item.urn == explicit_urn for item in candidates
+        ) == 1
+
     platform = next(
         (name for name in _PLATFORMS if re.search(rf"\b{re.escape(name)}\b", question, re.IGNORECASE)),
         None,
