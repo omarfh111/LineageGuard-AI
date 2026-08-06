@@ -1,0 +1,124 @@
+name: Live deployment audit
+
+on:
+  push:
+    branches:
+      - audit/live-validation-20260806
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve DNS and inspect TLS
+        shell: bash
+        run: |
+          set -euo pipefail
+          getent ahosts lineageguard.hackdev.tech
+          echo | openssl s_client -connect lineageguard.hackdev.tech:443 -servername lineageguard.hackdev.tech 2>/dev/null | openssl x509 -noout -subject -issuer -dates
+
+      - name: Validate frontend and public headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            --connect-timeout 15 --max-time 45 \
+            --dump-header /tmp/frontend-headers.txt \
+            --output /tmp/frontend.html \
+            https://lineageguard.hackdev.tech/
+          test -s /tmp/frontend.html
+          grep -Eiq '<!doctype html|<html' /tmp/frontend.html
+          sed -n '1,40p' /tmp/frontend-headers.txt
+
+      - name: Validate API health contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            --connect-timeout 15 --max-time 60 \
+            https://lineageguard.hackdev.tech/api/v1/health \
+            --output /tmp/health.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path('/tmp/health.json').read_text())
+          assert payload.get('status') == 'ok', payload
+          assert payload.get('service') == 'lineageguard-api', payload
+          assert payload.get('datahub') == 'configured', payload
+          assert payload.get('qdrant') == 'configured', payload
+          assert payload.get('writeback') in {'disabled', 'reviewer_unconfigured', 'ready'}, payload
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Validate OpenAPI and read-only catalog endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            --connect-timeout 15 --max-time 45 \
+            https://lineageguard.hackdev.tech/openapi.json \
+            --output /tmp/openapi.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          spec = json.loads(Path('/tmp/openapi.json').read_text())
+          paths = spec.get('paths', {})
+          required = ['/api/v1/health', '/api/v1/chat']
+          missing = [path for path in required if path not in paths]
+          assert not missing, f'Missing OpenAPI paths: {missing}'
+          print(f"OpenAPI paths: {len(paths)}")
+          PY
+
+          for endpoint in \
+            /api/v1/datahub/catalog/status \
+            /api/v1/catalog/status; do
+            code=$(curl --silent --show-error --location \
+              --connect-timeout 15 --max-time 60 \
+              --output /tmp/catalog.json --write-out '%{http_code}' \
+              "https://lineageguard.hackdev.tech${endpoint}" || true)
+            if [ "$code" = "200" ]; then
+              echo "Catalog endpoint OK: $endpoint"
+              cat /tmp/catalog.json
+              exit 0
+            fi
+          done
+          echo 'No known catalog status endpoint returned 200' >&2
+          exit 1
+
+      - name: Validate CORS preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --include \
+            --request OPTIONS \
+            --header 'Origin: https://lineageguard.hackdev.tech' \
+            --header 'Access-Control-Request-Method: GET' \
+            https://lineageguard.hackdev.tech/api/v1/health \
+            --output /tmp/cors.txt
+          cat /tmp/cors.txt
+          grep -Eiq '^access-control-allow-origin: https://lineageguard\.hackdev\.tech\r?$' /tmp/cors.txt
+
+      - name: Ensure sensitive service ports are not publicly reachable
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import socket
+
+          host = 'lineageguard.hackdev.tech'
+          exposed = []
+          for port in (8000, 6333, 5173, 8080, 9002):
+              try:
+                  with socket.create_connection((host, port), timeout=3):
+                      exposed.append(port)
+              except OSError:
+                  pass
+          assert not exposed, f'Unexpected public TCP ports: {exposed}'
+          print('Sensitive ports are not publicly reachable')
+          PY
