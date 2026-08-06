@@ -55,7 +55,7 @@ jobs:
           print(json.dumps(payload, indent=2, sort_keys=True))
           PY
 
-      - name: Validate OpenAPI and read-only catalog endpoints
+      - name: Validate OpenAPI and catalog cache
         shell: bash
         run: |
           set -euo pipefail
@@ -69,27 +69,52 @@ jobs:
 
           spec = json.loads(Path('/tmp/openapi.json').read_text())
           paths = spec.get('paths', {})
-          required = ['/api/v1/health', '/api/v1/chat']
+          required = [
+              '/api/v1/health',
+              '/api/v1/chat',
+              '/api/v1/datahub/catalog/cache',
+              '/api/v1/datahub/search',
+          ]
           missing = [path for path in required if path not in paths]
           assert not missing, f'Missing OpenAPI paths: {missing}'
           print(f"OpenAPI paths: {len(paths)}")
           PY
 
-          for endpoint in \
-            /api/v1/datahub/catalog/status \
-            /api/v1/catalog/status; do
-            code=$(curl --silent --show-error --location \
-              --connect-timeout 15 --max-time 60 \
-              --output /tmp/catalog.json --write-out '%{http_code}' \
-              "https://lineageguard.hackdev.tech${endpoint}" || true)
-            if [ "$code" = "200" ]; then
-              echo "Catalog endpoint OK: $endpoint"
-              cat /tmp/catalog.json
-              exit 0
-            fi
-          done
-          echo 'No known catalog status endpoint returned 200' >&2
-          exit 1
+          curl --fail --silent --show-error --location \
+            --connect-timeout 15 --max-time 60 \
+            https://lineageguard.hackdev.tech/api/v1/datahub/catalog/cache \
+            --output /tmp/catalog.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path('/tmp/catalog.json').read_text())
+          status = payload.get('status') or payload.get('state')
+          graph = payload.get('graph') or {}
+          nodes = graph.get('nodes') or payload.get('nodes') or []
+          print(f'Catalog status: {status}; nodes: {len(nodes)}')
+          assert status in {'READY', 'REFRESHING', 'LOADING'}, payload
+          PY
+
+      - name: Validate live DataHub MCP search
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --get \
+            --connect-timeout 15 --max-time 90 \
+            --data-urlencode 'query=customer' \
+            https://lineageguard.hackdev.tech/api/v1/datahub/search \
+            --output /tmp/search.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path('/tmp/search.json').read_text())
+          assert payload.get('tool') == 'search', payload
+          result = payload.get('result')
+          assert isinstance(result, dict) and result, payload
+          print('Live DataHub MCP search: OK')
+          PY
 
       - name: Validate CORS preflight
         shell: bash
