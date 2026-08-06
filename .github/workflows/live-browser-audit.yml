@@ -29,7 +29,7 @@ jobs:
         env:
           BASE_URL: https://lineageguard.hackdev.tech
         run: |
-          cat > /tmp/live-browser-audit.mjs <<'JS'
+          cat > .live-browser-audit.mjs <<'JS'
           import { chromium } from '@playwright/test';
 
           const baseURL = process.env.BASE_URL;
@@ -93,7 +93,8 @@ jobs:
             await browser.close();
           }
           JS
-          node /tmp/live-browser-audit.mjs
+          node .live-browser-audit.mjs
+          rm -f .live-browser-audit.mjs
       - name: Upload audit screenshot
         if: always()
         uses: actions/upload-artifact@v4
