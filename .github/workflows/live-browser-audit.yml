@@ -1,0 +1,103 @@
+name: Live browser audit
+
+on:
+  push:
+    branches:
+      - audit/live-validation-20260806
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Run production read-only browser journey
+        env:
+          BASE_URL: https://lineageguard.hackdev.tech
+        run: |
+          cat > /tmp/live-browser-audit.mjs <<'JS'
+          import { chromium } from '@playwright/test';
+
+          const baseURL = process.env.BASE_URL;
+          const browser = await chromium.launch();
+          const context = await browser.newContext({
+            viewport: { width: 1440, height: 1000 },
+            ignoreHTTPSErrors: false,
+          });
+          const page = await context.newPage();
+          const consoleErrors = [];
+          const failedRequests = [];
+
+          page.on('console', (message) => {
+            if (message.type() === 'error') consoleErrors.push(message.text());
+          });
+          page.on('requestfailed', (request) => {
+            failedRequests.push(`${request.method()} ${request.url()} :: ${request.failure()?.errorText}`);
+          });
+
+          try {
+            await page.goto(`${baseURL}/`, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+            await page.waitForSelector('body', { state: 'visible' });
+
+            await page.goto(`${baseURL}/#/cartographie`, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+            const graph = page.getByTestId('catalog-graph');
+            await graph.waitFor({ state: 'visible', timeout: 30_000 });
+            await page.waitForFunction(() => {
+              const element = document.querySelector('[data-testid="catalog-graph"]');
+              return Number(element?.getAttribute('data-node-count') || '0') > 0;
+            }, { timeout: 90_000 });
+
+            await page.goto(`${baseURL}/#/analyse`, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+            const newColumn = page.getByRole('textbox', { name: 'New column name' });
+            await newColumn.fill(`lineageguard_live_audit_${Date.now()}`);
+            await page.getByRole('button', { name: 'Analyze impact', exact: false }).click();
+            const report = page.getByTestId('analysis-report');
+            await report.waitFor({ state: 'visible', timeout: 120_000 });
+            const runId = await report.getAttribute('data-analysis-run-id');
+            if (!runId || !/^[0-9a-f-]{36}$/i.test(runId)) {
+              throw new Error(`Invalid analysis run id: ${runId}`);
+            }
+
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 45_000 });
+            await page.getByTestId('analysis-report').waitFor({ state: 'visible', timeout: 45_000 });
+            const restoredRunId = await page.getByTestId('analysis-report').getAttribute('data-analysis-run-id');
+            if (restoredRunId !== runId) {
+              throw new Error(`Analysis recovery mismatch: ${runId} != ${restoredRunId}`);
+            }
+
+            const seriousConsoleErrors = consoleErrors.filter((entry) =>
+              !entry.includes('favicon') && !entry.includes('ResizeObserver')
+            );
+            if (seriousConsoleErrors.length) {
+              throw new Error(`Browser console errors: ${seriousConsoleErrors.join(' | ')}`);
+            }
+            if (failedRequests.length) {
+              throw new Error(`Failed browser requests: ${failedRequests.join(' | ')}`);
+            }
+          } finally {
+            await page.screenshot({ path: '/tmp/lineageguard-live-audit.png', fullPage: true }).catch(() => {});
+            await browser.close();
+          }
+          JS
+          node /tmp/live-browser-audit.mjs
+      - name: Upload audit screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lineageguard-live-browser-audit
+          path: /tmp/lineageguard-live-audit.png
+          if-no-files-found: ignore
