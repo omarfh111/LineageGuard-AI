@@ -310,3 +310,33 @@ async def test_unchanged_polls_never_start_another_full_refresh() -> None:
     assert snapshot.status.generation == 1
     assert snapshot.status.refresh_in_progress is False
     assert snapshot.status.last_checked_at is not None
+
+
+@pytest.mark.asyncio
+async def test_change_watch_timeout_uses_backoff_without_marking_ready_graph_failed() -> None:
+    cache = CatalogCache(
+        Settings(
+            app_env="test", database_url="sqlite:///:memory:", datahub_gms_url="http://localhost:8080",
+            datahub_gms_token=None, catalog_autoload=False, catalog_max_assets=20,
+            catalog_max_edges=20, catalog_refresh_seconds=1,
+        ),
+        client_factory=CacheClient,  # type: ignore[arg-type]
+    )
+    await cache._refresh("initial")
+    attempts = 0
+
+    async def timed_out_probe() -> bool:
+        nonlocal attempts
+        attempts += 1
+        raise TimeoutError("transient DataHub watch timeout")
+
+    cache._catalog_identity_changed = timed_out_probe  # type: ignore[method-assign]
+    assert not await cache._guarded_change_check()
+    first = await cache.snapshot()
+    assert first.status.state == "READY"
+    assert first.status.last_error is None
+    assert attempts == 1
+
+    # The backoff suppresses an immediate noisy retry.
+    assert not await cache._guarded_change_check()
+    assert attempts == 1

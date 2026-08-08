@@ -129,6 +129,9 @@ export default function GovernedReview({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [providerFailures, setProviderFailures] = useState<Set<string>>(() => new Set());
+  const [confirmation, setConfirmation] = useState<"APPROVE_REPORT" | "ROLLBACK" | null>(null);
+  const [reconciliation, setReconciliation] = useState<"ADOPT_COMPLETED_DOCUMENT" | "CONFIRM_NO_DOCUMENT_CREATED" | null>(null);
+  const [reconciliationDocumentUrn, setReconciliationDocumentUrn] = useState("");
 
   useEffect(() => {
     const runId = loadAnalysisRun(window.sessionStorage);
@@ -217,7 +220,6 @@ export default function GovernedReview({
   async function decide(decision: "APPROVE_REPORT" | "REQUEST_REVISION" | "REJECT") {
     const comment = decisionComment.trim();
     if (!proposal || !idempotencyKey || comment.length < 3) return;
-    if (decision === "APPROVE_REPORT" && !window.confirm("Approve the controlled DataHub document write?")) return;
     setBusy("decision"); setError(null);
     try {
       const result = await request<Proposal>(`/api/v1/writebacks/${proposal.run_id}/approve`, {
@@ -232,6 +234,7 @@ export default function GovernedReview({
       }
       setProposal(result);
       setDecisionComment("");
+      setConfirmation(null);
       setNotice(`Reviewer decision recorded: ${result.status}.`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Reviewer decision failed.");
@@ -239,7 +242,7 @@ export default function GovernedReview({
   }
 
   async function rollback() {
-    if (!proposal || !idempotencyKey || !window.confirm("Approve compensation of the document created by this run?")) return;
+    if (!proposal || !idempotencyKey) return;
     setBusy("rollback"); setError(null);
     try {
       const result = await request<Proposal>(`/api/v1/writebacks/${proposal.run_id}/rollback`, {
@@ -248,6 +251,7 @@ export default function GovernedReview({
         idempotency_key: idempotencyKey,
       }, { "X-LineageGuard-Reviewer-Capability": reviewerCapability });
       setProposal(result);
+      setConfirmation(null);
       setNotice(`Compensation recorded: ${result.status}.`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Compensation failed.");
@@ -256,11 +260,8 @@ export default function GovernedReview({
 
   async function reconcile(action: "ADOPT_COMPLETED_DOCUMENT" | "CONFIRM_NO_DOCUMENT_CREATED") {
     if (!proposal || !idempotencyKey) return;
-    const documentUrn = action === "ADOPT_COMPLETED_DOCUMENT"
-      ? window.prompt("Verified DataHub document URN:")
-      : null;
+    const documentUrn = action === "ADOPT_COMPLETED_DOCUMENT" ? reconciliationDocumentUrn.trim() : null;
     if (action === "ADOPT_COMPLETED_DOCUMENT" && !documentUrn) return;
-    if (!window.confirm("Continue only after directly verifying the DataHub state.")) return;
     setBusy("reconcile"); setError(null);
     try {
       const result = await request<Proposal>(`/api/v1/writebacks/${proposal.run_id}/reconcile`, {
@@ -270,6 +271,8 @@ export default function GovernedReview({
         document_urn: documentUrn ?? undefined,
       }, { "X-LineageGuard-Reviewer-Capability": reviewerCapability });
       setProposal(result);
+      setReconciliation(null);
+      setReconciliationDocumentUrn("");
       setNotice(`Reconciliation recorded: ${result.status}.`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Reconciliation failed.");
@@ -326,7 +329,7 @@ export default function GovernedReview({
       <div className="judge-grid-simple">{[judging.result.openai_verdict, judging.result.groq_verdict].map((verdict) => verdict && <JudgeCard key={verdict.judge_provider} verdict={verdict} />)}</div>
       {decision?.decision === "FINALIZE_READ_ONLY" && <ReviewerGate health={health} capability={reviewerCapability} setCapability={setReviewerCapability} busy={busy} onPrepare={prepareWriteback} />}
     </section>}
-    {proposal && <section className="review-card result"><span>HUMAN-IN-THE-LOOP</span><h2>{proposal.status}</h2><p>Allowed mutation: {proposal.allowed_mutations.join(", ")}</p><details><summary>Review the proposed document and immutable snapshot</summary><pre>{proposal.document_content}</pre><pre>{JSON.stringify(proposal.snapshot, null, 2)}</pre></details>{proposal.status === "PENDING_APPROVAL" && <label>Reviewer rationale<textarea value={decisionComment} onChange={(event) => setDecisionComment(event.target.value)} minLength={3} /></label>}<div className="review-actions"><button className="cta" onClick={() => decide("APPROVE_REPORT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || decisionComment.trim().length < 3}>Approve controlled write</button><button className="ghost" onClick={() => decide("REQUEST_REVISION")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || decisionComment.trim().length < 3}>Request revision</button><button className="danger" onClick={() => decide("REJECT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || decisionComment.trim().length < 3}>Reject</button>{["COMPLETED", "ROLLBACK_UNCERTAIN"].includes(proposal.status) && <button className="danger" onClick={rollback} disabled={busy !== null}>Approve compensation</button>}{["WRITEBACK_UNCERTAIN", "FAILED"].includes(proposal.status) && <><button className="ghost" onClick={() => reconcile("ADOPT_COMPLETED_DOCUMENT")} disabled={busy !== null}>Adopt verified document</button><button className="danger" onClick={() => reconcile("CONFIRM_NO_DOCUMENT_CREATED")} disabled={busy !== null}>Confirm no document and re-authorize</button></>}</div></section>}
+    {proposal && <section className="review-card result"><span>HUMAN-IN-THE-LOOP</span><h2>{proposal.status}</h2><p>Allowed mutation: {proposal.allowed_mutations.join(", ")}</p><details><summary>Review the proposed document and immutable snapshot</summary><pre>{proposal.document_content}</pre><pre>{JSON.stringify(proposal.snapshot, null, 2)}</pre></details>{proposal.status === "PENDING_APPROVAL" && <label>Reviewer rationale<textarea value={decisionComment} onChange={(event) => setDecisionComment(event.target.value)} minLength={3} /></label>}{confirmation && <section className="review-banner notice" role="alert"><b>Final human confirmation required</b><p>{confirmation === "APPROVE_REPORT" ? "This writes only the reviewed DataHub Analysis document. No schema or data mutation is possible." : "This compensates only the Analysis document written by this same run."}</p><div className="review-actions"><button className="cta" onClick={() => confirmation === "APPROVE_REPORT" ? decide("APPROVE_REPORT") : rollback()} disabled={busy !== null}>Confirm controlled action</button><button className="ghost" onClick={() => setConfirmation(null)} disabled={busy !== null}>Cancel</button></div></section>}{reconciliation && <section className="review-banner notice" role="alert"><b>Reconcile uncertain write-back</b><p>{reconciliation === "ADOPT_COMPLETED_DOCUMENT" ? "Enter the exact document URN only after verifying that it belongs to this report and asset in DataHub." : "Confirm only after verifying that no Analysis document was created for this proposal."}</p>{reconciliation === "ADOPT_COMPLETED_DOCUMENT" && <label>Verified DataHub document URN<input value={reconciliationDocumentUrn} onChange={(event) => setReconciliationDocumentUrn(event.target.value)} placeholder="urn:li:document:..." /></label>}<div className="review-actions"><button className="cta" onClick={() => reconcile(reconciliation)} disabled={busy !== null || (reconciliation === "ADOPT_COMPLETED_DOCUMENT" && !reconciliationDocumentUrn.trim())}>Confirm reconciliation</button><button className="ghost" onClick={() => { setReconciliation(null); setReconciliationDocumentUrn(""); }} disabled={busy !== null}>Cancel</button></div></section>}<div className="review-actions"><button className="cta" onClick={() => setConfirmation("APPROVE_REPORT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || decisionComment.trim().length < 3}>Approve controlled write</button><button className="ghost" onClick={() => decide("REQUEST_REVISION")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || decisionComment.trim().length < 3}>Request revision</button><button className="danger" onClick={() => decide("REJECT")} disabled={busy !== null || proposal.status !== "PENDING_APPROVAL" || decisionComment.trim().length < 3}>Reject</button>{["COMPLETED", "ROLLBACK_UNCERTAIN"].includes(proposal.status) && <button className="danger" onClick={() => setConfirmation("ROLLBACK")} disabled={busy !== null}>Approve compensation</button>}{["WRITEBACK_UNCERTAIN", "FAILED"].includes(proposal.status) && <><button className="ghost" onClick={() => { setConfirmation(null); setReconciliation("ADOPT_COMPLETED_DOCUMENT"); }} disabled={busy !== null}>Adopt verified document</button><button className="danger" onClick={() => { setConfirmation(null); setReconciliation("CONFIRM_NO_DOCUMENT_CREATED"); }} disabled={busy !== null}>Confirm no document and re-authorize</button></>}</div></section>}
   </section>;
 }
 

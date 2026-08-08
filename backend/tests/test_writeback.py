@@ -15,12 +15,30 @@ from app.domain.contracts import (
     WritebackStatus,
 )
 from app.services.writeback import (
+    McpDocumentWriter,
     WritebackConflict,
     WritebackError,
     WritebackOutcomeUnknown,
     WritebackRepository,
     WritebackService,
 )
+
+
+class FakeDocumentMcpClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, str]]] = []
+
+    async def call_tool(self, tool_name: str, arguments: dict[str, str]) -> dict[str, object]:
+        self.calls.append((tool_name, arguments))
+        return {
+            "documents": [
+                {
+                    "urn": "urn:li:document:verified-write",
+                    "info": {"title": "LineageGuard analysis verified"},
+                }
+            ],
+            "related_asset": arguments["urns"],
+        }
 
 
 class FakeWriter:
@@ -118,6 +136,22 @@ def approval(
         comment=f"{decision} explicitly confirmed in test",
         idempotency_key=key,
     )
+
+
+@pytest.mark.asyncio
+async def test_mcp_document_verification_reads_documents_from_the_target_asset() -> None:
+    client = FakeDocumentMcpClient()
+    writer = McpDocumentWriter(client)  # type: ignore[arg-type]
+    target = "urn:li:dataset:(urn:li:dataPlatform:dbt,orders,PROD)"
+
+    verified = await writer.verify(
+        "urn:li:document:verified-write",
+        "LineageGuard analysis verified",
+        target,
+    )
+
+    assert verified is True
+    assert client.calls == [("get_entities", {"urns": target})]
 
 
 @pytest.mark.asyncio

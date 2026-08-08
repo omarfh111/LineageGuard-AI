@@ -779,6 +779,37 @@ def _dataset_candidate(candidate: RagCitation) -> RagCitation | None:
     )
 
 
+def _selected_dataset_target(urn: str) -> RagCitation | None:
+    """Create a bounded target lock from a dataset URN chosen in the UI.
+
+    The selected target came from a prior live MCP ambiguity response. A new
+    broad search can time out or rank differently, so it must not silently
+    discard the user's explicit selection. Subsequent schema/lineage reads are
+    still direct live MCP reads of this exact URN; an invalid URN yields no
+    facts and can never fall back to another asset.
+    """
+
+    marker = "urn:li:dataset:(urn:li:dataPlatform:"
+    if not urn.startswith(marker) or not urn.endswith(")"):
+        return None
+    payload = urn[len(marker) : -1]
+    if "," not in payload:
+        return None
+    platform, remainder = payload.split(",", 1)
+    if "," not in remainder:
+        return None
+    label = remainder.rsplit(",", 1)[0]
+    if not platform or not label:
+        return None
+    return RagCitation(
+        urn=urn,
+        label=label,
+        entity_type="DATASET",
+        platform_urn=f"urn:li:dataPlatform:{platform}",
+        source="user_selected_live_mcp",
+    )
+
+
 def _mcp_read_timeout_state(
     state: AgenticChatState,
     resolution: ChatTargetResolution,
@@ -983,7 +1014,8 @@ class HybridChatAgent:
         # Qdrant may suggest bounded candidate labels, but only an exact URN
         # rediscovered by live DataHub MCP is admitted as evidence.
         should_confirm_qdrant = (
-            not (prior_resolution and prior_resolution.status == "RESOLVED")
+            not state["request"].selected_asset_urn
+            and not (prior_resolution and prior_resolution.status == "RESOLVED")
             and (
                 not matches
                 or (requires_target and not _has_exact_live_target(state["request"].message, matches))
@@ -1005,16 +1037,38 @@ class HybridChatAgent:
             matches = _filter_general_matches(
                 state["request"].message, plan.search_terms, matches
             )
-        resolution = prior_resolution if prior_resolution and prior_resolution.status == "RESOLVED" else _resolve_target(
-            state["request"].message,
-            matches,
-            state.get("active_asset"),
-            requires_target,
-            _qdrant_preferred_urns(
-                confirmed_qdrant,
-                self._settings.rag_mcp_confirmation_min_margin,
-            ),
-        )
+        selected_urn = state["request"].selected_asset_urn
+        if selected_urn:
+            # A selection is a target lock, not a new natural-language query.
+            # A fresh broad search may be incomplete; preserve the exact prior
+            # MCP selection and verify it only with direct schema/lineage reads.
+            selected = [item for item in matches if item.urn == selected_urn]
+            if not selected:
+                selected_target = _selected_dataset_target(selected_urn)
+                selected = [selected_target] if selected_target else []
+            resolution = (
+                ChatTargetResolution(
+                    status="RESOLVED",
+                    detail=f"Locked to the user-selected DataHub target: {selected_urn}",
+                    targets=selected,
+                )
+                if len(selected) == 1
+                else ChatTargetResolution(
+                    status="NOT_FOUND",
+                    detail="The selected DataHub asset was not returned by the current live MCP search, so no schema or lineage tool was called.",
+                )
+            )
+        else:
+            resolution = prior_resolution if prior_resolution and prior_resolution.status == "RESOLVED" else _resolve_target(
+                state["request"].message,
+                matches,
+                state.get("active_asset"),
+                requires_target,
+                _qdrant_preferred_urns(
+                    confirmed_qdrant,
+                    self._settings.rag_mcp_confirmation_min_margin,
+                ),
+            )
         # Never alias the target lock with the expanding citation list. Lineage
         # descendants are citations, not new targets for a repair round.
         targets = list(resolution.targets) if resolution.status == "RESOLVED" else []

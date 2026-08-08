@@ -192,6 +192,34 @@ async def test_known_incompatible_type_change_cannot_receive_nominal_double_pass
     assert result.aggregate_decision and result.aggregate_decision.decision == "NEEDS_REPAIR"
 
 
+@pytest.mark.asyncio
+async def test_factual_judge_can_pass_while_technical_judge_rejects_high_impact_identifier_drop() -> None:
+    request = judging_request()
+    request.impact_report.request.column_name = "order_id"
+    request.impact_report.evidence_bundle.items[0].raw_reference["field_names"] = ["order_id"]
+    request.impact_report.risk_assessment = calculate_risk_assessment(
+        request.impact_report.request,
+        request.impact_report.impacted_assets,
+        request.impact_report.missing_metadata,
+    )
+    request.impact_report.confidence = round(
+        1 - request.impact_report.risk_assessment.components.metadata_uncertainty / 100,
+        2,
+    )
+    request.remediation_plan = DeterministicRemediationPlanner().plan(
+        request.impact_report
+    )
+    openai = FakeJudge(verdict(JudgeProvider.OPENAI, JudgeStatus.PASS))
+    groq = FakeJudge(verdict(JudgeProvider.GROQ, JudgeStatus.PASS))
+
+    result = await JudgingService(openai, groq).evaluate(request)
+
+    assert result.openai_verdict and result.openai_verdict.verdict is JudgeStatus.PASS
+    assert result.groq_verdict and result.groq_verdict.verdict is JudgeStatus.FAIL
+    assert "HIGH-criticality" in result.groq_verdict.critical_errors[0]
+    assert result.aggregate_decision and result.aggregate_decision.decision == "NEEDS_REPAIR"
+
+
 @pytest.mark.parametrize(
     ("openai_status", "groq_status", "decision"),
     [

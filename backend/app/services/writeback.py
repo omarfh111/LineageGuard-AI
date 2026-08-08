@@ -89,8 +89,13 @@ class McpDocumentWriter:
         expected_title: str,
         expected_related_asset: str,
     ) -> bool:
+        # `get_entities` exposes documents *related to an asset*.  A document
+        # URN is not itself a supported related-document host, so querying the
+        # document directly always returns an empty result even after a
+        # successful `save_document`.  Re-read the governed target instead and
+        # prove that the exact new document is attached to it.
         result = await self.client.call_tool(
-            "get_entities", {"urns": document_urn}
+            "get_entities", {"urns": expected_related_asset}
         )
         serialized = json.dumps(result, sort_keys=True)
         return all(

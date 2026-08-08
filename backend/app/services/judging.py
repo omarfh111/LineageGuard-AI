@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
@@ -181,6 +182,8 @@ class JudgingService:
         # FAIL with a deterministic safety rationale.
         openai_verdict = _enforce_nonnegotiable_safety_rules(request, openai_verdict)
         groq_verdict = _enforce_nonnegotiable_safety_rules(request, groq_verdict)
+        openai_verdict = _enforce_role_specific_safety_review(request, openai_verdict)
+        groq_verdict = _enforce_role_specific_safety_review(request, groq_verdict)
         return JudgingResult(
             deterministic_validation=validation,
             openai_verdict=openai_verdict,
@@ -231,6 +234,61 @@ def _enforce_nonnegotiable_safety_rules(
             "audit_rationale": [
                 *verdict.audit_rationale,
                 "Deterministic safety policy overrode a nominal PASS because compatibility is explicitly false.",
+            ],
+        }
+    )
+
+
+def _enforce_role_specific_safety_review(
+    request: JudgingRequest, verdict: JudgeVerdict
+) -> JudgeVerdict:
+    """Keep the technical/safety judge independent on destructive identifiers.
+
+    A report can be factually grounded and still be unsafe to approve. Removing
+    an identifier with HIGH-criticality downstream consumers requires proven
+    consumer migration. The factual judge may PASS; the technical/safety judge
+    must FAIL until that proof exists. This is policy, never a random demo
+    failure.
+    """
+
+    change = request.impact_report.request
+    identifier = bool(
+        re.search(r"(?:^|_)(?:id|identifier|key)$", change.column_name, re.I)
+    )
+    high_impact = any(
+        item.criticality == "HIGH" for item in request.impact_report.impacted_assets
+    )
+    if not (
+        verdict.judge_provider is JudgeProvider.GROQ
+        and verdict.verdict is JudgeStatus.PASS
+        and change.change_type is ChangeType.DROP_COLUMN
+        and identifier
+        and high_impact
+    ):
+        return verdict
+
+    issue = (
+        "Removing an identifier with HIGH-criticality downstream consumers is not approved "
+        "until consumer migration evidence is attached to the report."
+    )
+    return verdict.model_copy(
+        update={
+            "verdict": JudgeStatus.FAIL,
+            "scores": verdict.scores.model_copy(
+                update={
+                    "technical_correctness": min(verdict.scores.technical_correctness, 2),
+                    "safety": min(verdict.scores.safety, 1),
+                    "actionability": min(verdict.scores.actionability, 3),
+                }
+            ),
+            "critical_errors": [*verdict.critical_errors, issue],
+            "repair_instructions": [
+                *verdict.repair_instructions,
+                "Attach evidence that every HIGH-criticality consumer has migrated before requesting another review.",
+            ],
+            "audit_rationale": [
+                *verdict.audit_rationale,
+                "Technical safety policy rejected a destructive identifier removal with HIGH-criticality downstream impact.",
             ],
         }
     )
@@ -521,7 +579,12 @@ async def _call_with_retries(
         except TimeoutError:
             logger.warning("%s judge timed out on attempt %s", provider, attempt + 1)
             if attempt == retries:
-                return _unavailable_verdict(provider, model, JudgeStatus.TIMEOUT)
+                return _unavailable_verdict(
+                    provider,
+                    model,
+                    JudgeStatus.TIMEOUT,
+                    "The provider did not return a verdict before the configured deadline after bounded retries.",
+                )
         except Exception as error:
             logger.warning(
                 "%s judge failed on attempt %s: %s",
@@ -530,12 +593,25 @@ async def _call_with_retries(
                 _safe_provider_error(error),
             )
             if attempt == retries:
-                return _unavailable_verdict(provider, model, JudgeStatus.ERROR)
-    return _unavailable_verdict(provider, model, JudgeStatus.ERROR)
+                return _unavailable_verdict(
+                    provider,
+                    model,
+                    JudgeStatus.ERROR,
+                    f"The provider request failed after bounded retries ({type(error).__name__}).",
+                )
+    return _unavailable_verdict(
+        provider,
+        model,
+        JudgeStatus.ERROR,
+        "The provider did not return a usable verdict after bounded retries.",
+    )
 
 
 def _unavailable_verdict(
-    provider: JudgeProvider, model: str, status: JudgeStatus
+    provider: JudgeProvider,
+    model: str,
+    status: JudgeStatus,
+    reason: str | None = None,
 ) -> JudgeVerdict:
     return JudgeVerdict(
         judge_provider=provider,
@@ -548,7 +624,10 @@ def _unavailable_verdict(
             safety=0,
             actionability=0,
         ),
-        critical_errors=["Judge unavailable; no factual or technical approval was granted."],
+        critical_errors=[
+            reason
+            or "Judge unavailable; no factual or technical approval was granted."
+        ],
         non_critical_issues=[],
         repair_instructions=[],
         confidence=0,

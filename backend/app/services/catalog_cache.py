@@ -13,7 +13,7 @@ import hashlib
 import json
 from collections import deque
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.core.config import Settings, get_settings
@@ -54,6 +54,8 @@ class CatalogCache:
         self._pending_schema_fingerprints: dict[str, str] = {}
         self._probe_cursor = 0
         self._detected_change: str | None = None
+        self._change_check_failures = 0
+        self._next_change_check_at: datetime | None = None
         self._actions: dict[str, list[CatalogAction]] = {}
         self._task: asyncio.Task[None] | None = None
         self._refresh_event = asyncio.Event()
@@ -223,21 +225,37 @@ class CatalogCache:
             )
 
     async def _guarded_change_check(self) -> bool:
+        now = datetime.now(UTC)
+        if self._next_change_check_at and now < self._next_change_check_at:
+            # A watch probe is best-effort. Do not compete with chat and
+            # catalog reads while DataHub is transiently slow.
+            return False
         try:
             changed = await self._catalog_identity_changed()
             async with self._lock:
+                self._change_check_failures = 0
+                self._next_change_check_at = None
                 self._status = self._status.model_copy(
-                    update={"last_checked_at": datetime.now(UTC)}
+                    update={"last_checked_at": now, "last_error": None}
                 )
             return changed
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001 - a poll failure must not kill the worker
             async with self._lock:
+                self._change_check_failures += 1
+                delay_seconds = min(
+                    300,
+                    self._settings.catalog_refresh_seconds
+                    * (2 ** min(self._change_check_failures, 3)),
+                )
+                self._next_change_check_at = now + timedelta(seconds=delay_seconds)
                 self._status = self._status.model_copy(
                     update={
-                        "last_checked_at": datetime.now(UTC),
-                        "last_error": f"Change check failed: {type(error).__name__}",
+                        "last_checked_at": now,
+                        # The graph remains verified and available. A failed
+                        # background watch must not present as a cache failure.
+                        "last_error": None,
                     }
                 )
             return False

@@ -594,6 +594,9 @@ class ChatRequest(BaseModel):
     max_sources: int = Field(default=6, ge=1, le=12)
     session_id: str | None = Field(default=None, min_length=8, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
     memory_enabled: bool = True
+    # A browser may submit a prior live-MCP candidate after the user resolves
+    # an ambiguity. It is always re-checked against the new MCP search.
+    selected_asset_urn: str | None = Field(default=None, pattern=r"^urn:li:")
 
 
 class ChatMemoryStatus(BaseModel):

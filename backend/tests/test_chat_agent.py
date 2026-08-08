@@ -710,6 +710,27 @@ async def test_schema_or_lineage_never_selects_an_ambiguous_orders_asset() -> No
     assert response.verification and not response.verification.passed
 
 
+@pytest.mark.asyncio
+async def test_selected_live_urn_replays_the_original_lineage_intent() -> None:
+    datahub = AmbiguousOrdersDataHub()
+    selected = "urn:li:dataset:(urn:li:dataPlatform:snowflake,db.orders,PROD)"
+    response = await HybridChatAgent(
+        datahub,
+        SchemaIndex(),
+        completion=SafeNoMatchCompletion(),
+        planner=KeywordPlanningProvider(),
+    ).respond(
+        ChatRequest(
+            message="Show the downstream lineage of the orders dataset",
+            selected_asset_urn=selected,
+        )
+    )
+
+    assert response.target_resolution and response.target_resolution.status == "RESOLVED"
+    assert [item.urn for item in response.target_resolution.targets] == [selected]
+    assert datahub.lineage_calls == [selected]
+
+
 class SnowflakeOrdersDataHub:
     snowflake_orders = "urn:li:dataset:(urn:li:dataPlatform:snowflake,db.orders,PROD)"
     order_details = "urn:li:dataset:(urn:li:dataPlatform:snowflake,db.order_details,PROD)"

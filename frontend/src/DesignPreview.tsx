@@ -326,11 +326,16 @@ function AssistantView({ go, onAnalysisHandoff }: { go: (page: Page) => void; on
     window.requestAnimationFrame(() => viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" }));
   }, [turns.length, busy]);
   async function index() { setBusy("index"); setError(null); try { setStatus(await request<RagStatus>("/api/v1/chat/index/ingest", {})); } catch (caught) { setError(caught instanceof Error ? caught.message : "Indexing unavailable"); } finally { setBusy(null); } }
-  async function askQuestion(question: string) {
+  async function askQuestion(question: string, selectedAssetUrn?: string) {
     if (!question) return;
     setBusy("query"); setError(null);
     try {
-      const reply = await request<ChatReply>("/api/v1/chat/query", { message: question, session_id: sessionId, memory_enabled: memoryEnabled });
+      const reply = await request<ChatReply>("/api/v1/chat/query", {
+        message: question,
+        session_id: sessionId,
+        memory_enabled: memoryEnabled,
+        selected_asset_urn: selectedAssetUrn,
+      });
       setTurns((current) => [...current, { id: crypto.randomUUID(), question, reply }].slice(-6));
       setMessage("");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Question unavailable"); } finally { setBusy(null); }
@@ -366,11 +371,10 @@ function AssistantView({ go, onAnalysisHandoff }: { go: (page: Page) => void; on
           {turns.length > 0 && <section className="conversation-history" aria-live="polite">{turns.map((turn) => <div className="conversation-turn" key={turn.id}>
             <div className="user-message"><span>You</span><p>{turn.question}</p></div>
             <AssistantResponse reply={turn.reply} go={go} onAnalysisHandoff={onAnalysisHandoff} onChooseTarget={(target) => {
-              // Preserve the original intent (schema, lineage, or impact),
-              // then add the user's explicit platform selection. The click
-              // immediately re-runs the same request rather than leaving a
-              // generic, misleading draft in the composer.
-              void askQuestion(`${turn.question}\nUse the ${displayPlatform(target)} asset named ${target.label}.`);
+              // Preserve the original question and lock it to the exact URN
+              // selected from the preceding live MCP response. The backend
+              // locks that target and performs fresh MCP reads only for it.
+              void askQuestion(turn.question, target.urn);
             }} />
           </div>)}</section>}
         </div>
@@ -427,7 +431,7 @@ function AssistantResponse({ reply, go, onAnalysisHandoff, onChooseTarget }: {
             <p>{friendlyEvidenceSummary(item)}</p>
           </div>)}
         </div>}
-        <div className="evidence-tags">{reply.citations.map((citation) => <code key={`${citation.source}-${citation.urn}`}>{citation.label} · {citation.source === "datahub_mcp_live" ? "MCP verified" : "RAG context"}</code>)}</div>
+        <div className="evidence-tags">{reply.citations.map((citation) => <code key={`${citation.source}-${citation.urn}`}>{citation.label} · {["datahub_mcp_live", "user_selected_live_mcp"].includes(citation.source) ? "MCP verified" : "RAG context"}</code>)}</div>
         <details><summary>How this answer was checked</summary><ul>{reply.agent_trace.map((step) => <li key={`${step.id}-${step.detail}`}>{step.label} · {step.status} · {step.detail}</li>)}</ul></details>
         {reply.action_proposal.action !== "NONE" && <div className="action-callout">
           <b>{reply.action_proposal.action}</b>
