@@ -265,7 +265,7 @@ async def test_guarded_refresh_recovers_after_an_unexpected_provider_error() -> 
 
 
 @pytest.mark.asyncio
-async def test_background_worker_automatically_retries_after_watchdog_timeout() -> None:
+async def test_background_worker_does_not_loop_after_watchdog_timeout() -> None:
     client = RecoveringCacheClient()
     settings = Settings(
         app_env="test", database_url="sqlite:///:memory:", datahub_gms_url="http://localhost:8080",
@@ -276,18 +276,14 @@ async def test_background_worker_automatically_retries_after_watchdog_timeout() 
     cache = CatalogCache(settings, client_factory=lambda: client)  # type: ignore[arg-type]
 
     await cache._start_worker("watchdog_test")
-    deadline = asyncio.get_running_loop().time() + 0.5
-    while (await cache.snapshot()).status.generation < 1:
-        if asyncio.get_running_loop().time() >= deadline:
-            pytest.fail("catalog worker did not recover before the test deadline")
-        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.12)
     snapshot = await cache.snapshot()
     await cache.stop()
 
-    assert client.search_attempts >= 2
-    assert snapshot.status.state == "READY"
-    assert snapshot.status.consecutive_failures == 0
-    assert snapshot.status.generation == 1
+    assert client.search_attempts == 1
+    assert snapshot.status.state == "FAILED"
+    assert snapshot.status.consecutive_failures == 1
+    assert snapshot.status.generation == 0
 
 
 @pytest.mark.asyncio

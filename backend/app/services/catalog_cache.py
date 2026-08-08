@@ -188,13 +188,14 @@ class CatalogCache:
                     break
                 except TimeoutError:
                     status = (await self.snapshot()).status
-                    if (
-                        status.state
-                        in {CatalogCacheState.FAILED, CatalogCacheState.STALE}
-                        and status.consecutive_failures > 0
-                    ):
-                        reason = "retry_after_datahub_unavailable"
-                        break
+                    # A failed full traversal must not restart itself every
+                    # polling cycle. The prior graph remains visible and a
+                    # human refresh, an in-app action, or a later process
+                    # restart can request another expensive scan explicitly.
+                    # This avoids starving chat and the browser main thread
+                    # while DataHub is returning a transient partial batch.
+                    if status.consecutive_failures > 0:
+                        continue
                     if await self._guarded_change_check():
                         reason = (
                             f"detected_change:{self._detected_change or 'catalog'}"
@@ -250,9 +251,9 @@ class CatalogCache:
                 loaded_assets=len(self._graph.nodes),
                 loaded_edges=len(self._graph.edges),
                 message=(
-                    "Catalog refresh failed; the previous graph remains available."
+                    "Catalog refresh failed; the previous graph remains available. Refresh manually after DataHub recovers."
                     if has_graph
-                    else "Catalog refresh failed; the worker will retry automatically."
+                    else "Catalog refresh failed before the first graph was ready. Refresh manually after DataHub recovers."
                 ),
                 last_updated_at=self._status.last_updated_at,
                 refresh_reason=reason,
@@ -351,6 +352,7 @@ class CatalogCache:
     async def _refresh(self, reason: str) -> None:
         async with self._lock:
             had_graph = bool(self._graph.nodes)
+            previous_graph = self._graph.model_copy(deep=True)
             started_at = datetime.now(UTC)
             self._status = CatalogCacheStatus(
                 state=CatalogCacheState.RUNNING,
@@ -387,8 +389,10 @@ class CatalogCache:
                         "message": "Catalog assets are ready; enriching observed lineage relationships in the background.",
                     }
                 )
-        graph, lineage_fingerprints = await self._load_lineage_graph(
-            roots, publish_progress=not had_graph
+        graph, lineage_fingerprints, unavailable_roots = await self._load_lineage_graph(
+            roots,
+            publish_progress=not had_graph,
+            previous_graph=previous_graph,
         )
         now = datetime.now(UTC)
         async with self._lock:
@@ -417,7 +421,14 @@ class CatalogCache:
                 state=CatalogCacheState.READY,
                 loaded_assets=len(graph.nodes),
                 loaded_edges=len(graph.edges),
-                message="Server-side 3D catalog cache is ready and stays available to every browser.",
+                message=(
+                    "Server-side 3D catalog cache is ready and stays available to every browser."
+                    if not unavailable_roots
+                    else (
+                        "Server-side 3D catalog cache is ready; retained prior lineage for "
+                        f"{len(unavailable_roots)} temporarily unavailable asset(s)."
+                    )
+                ),
                 last_updated_at=now,
                 refresh_reason=reason,
                 refresh_started_at=started_at,
@@ -474,8 +485,12 @@ class CatalogCache:
         )
 
     async def _load_lineage_graph(
-        self, roots: list[CatalogNode], *, publish_progress: bool
-    ) -> tuple[CatalogGraph, dict[str, str]]:
+        self,
+        roots: list[CatalogNode],
+        *,
+        publish_progress: bool,
+        previous_graph: CatalogGraph,
+    ) -> tuple[CatalogGraph, dict[str, str], set[str]]:
         client = self._client_factory()
         async def fetch(root: CatalogNode) -> CatalogGraph | None:
             try:
@@ -487,6 +502,8 @@ class CatalogCache:
         nodes: dict[str, CatalogNode] = {node.urn: node for node in roots}
         edges: dict[tuple[str, str, str], CatalogEdge] = {}
         lineage_fingerprints: dict[str, str] = {}
+        unavailable_roots: set[str] = set()
+        previous_nodes = {node.urn: node for node in previous_graph.nodes}
         for start in range(0, len(roots), 50):
             batch = roots[start : start + 50]
 
@@ -522,12 +539,13 @@ class CatalogCache:
                     projections = await fetch_individually()
             else:
                 projections = await fetch_individually()
-            if any(projection is None for projection in projections):
-                raise DataHubConfigurationError(
-                    f"Lineage refresh returned an incomplete batch at offset {start}"
-                )
             for root, projection in zip(batch, projections, strict=True):
                 if projection is None:
+                    # A single root can be temporarily unsupported or time out
+                    # even after the batch-to-single fallback. Keep the last
+                    # known relationships for that root instead of aborting a
+                    # 1k+ asset refresh and forcing a retry loop.
+                    unavailable_roots.add(root.urn)
                     continue
                 lineage_fingerprints[root.urn] = _lineage_fingerprint(
                     projection, root.urn
@@ -560,6 +578,23 @@ class CatalogCache:
                         ),
                     }
                 )
+        # Preserve the old, clearly marked subset only for roots that could
+        # not be read this time. A successful root always replaces its stale
+        # relationships atomically at the end of the refresh.
+        if unavailable_roots:
+            for edge in previous_graph.edges:
+                if edge.source_urn not in unavailable_roots:
+                    continue
+                if len(edges) >= self._settings.catalog_max_edges:
+                    break
+                edges.setdefault((edge.source_urn, edge.target_urn, edge.direction), edge)
+                for urn in (edge.source_urn, edge.target_urn):
+                    if urn in previous_nodes:
+                        nodes.setdefault(urn, previous_nodes[urn])
+        if len(unavailable_roots) == len(roots):
+            raise DataHubConfigurationError(
+                "DataHub returned no usable lineage responses for this refresh"
+            )
         return (
             CatalogGraph(
                 nodes=list(nodes.values())[: self._settings.catalog_max_assets],
@@ -570,6 +605,7 @@ class CatalogCache:
                 or len(edges) > self._settings.catalog_max_edges,
             ),
             lineage_fingerprints,
+            unavailable_roots,
         )
 
 

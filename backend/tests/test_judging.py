@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from app.api.v1.judging import get_judging_service
 from app.domain.contracts import (
     ChangeRequest,
+    ChangeType,
     ClaimType,
     EvidenceBundle,
     EvidenceItem,
@@ -155,6 +156,40 @@ async def test_gate_zero_blocks_judges_when_evidence_is_invalid() -> None:
     assert result.deterministic_validation.passed is False
     assert result.openai_verdict is None
     assert (openai.calls, groq.calls) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_known_incompatible_type_change_cannot_receive_nominal_double_pass() -> None:
+    request = judging_request()
+    request.impact_report.request.change_type = ChangeType.CHANGE_COLUMN_TYPE
+    request.impact_report.request.column_name = "customer_status"
+    request.impact_report.request.new_value = "BOOLEAN"
+    request.impact_report.request.type_change_compatible = False
+    schema = request.impact_report.evidence_bundle.items[0]
+    schema.raw_reference["field_types"] = {"customer_status": "VARCHAR"}
+    request.impact_report.risk_assessment = calculate_risk_assessment(
+        request.impact_report.request,
+        request.impact_report.impacted_assets,
+        request.impact_report.missing_metadata,
+    )
+    request.impact_report.confidence = round(
+        1
+        - request.impact_report.risk_assessment.components.metadata_uncertainty
+        / 100,
+        2,
+    )
+    request.remediation_plan = DeterministicRemediationPlanner().plan(
+        request.impact_report
+    )
+    openai = FakeJudge(verdict(JudgeProvider.OPENAI, JudgeStatus.PASS))
+    groq = FakeJudge(verdict(JudgeProvider.GROQ, JudgeStatus.PASS))
+
+    result = await JudgingService(openai, groq).evaluate(request)
+
+    assert result.deterministic_validation.passed, result.deterministic_validation.errors
+    assert result.openai_verdict and result.openai_verdict.verdict is JudgeStatus.FAIL
+    assert result.groq_verdict and result.groq_verdict.verdict is JudgeStatus.FAIL
+    assert result.aggregate_decision and result.aggregate_decision.decision == "NEEDS_REPAIR"
 
 
 @pytest.mark.parametrize(

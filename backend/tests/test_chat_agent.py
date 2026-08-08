@@ -6,6 +6,7 @@ import pytest
 from app.core.config import Settings
 from app.domain.contracts import AgentEvidence, ChatActionType, ChangeType, ChatRequest, RagCitation
 from app.services.chat_agent import (
+    AgentPlan,
     HybridChatAgent,
     KeywordPlanningProvider,
     OpenAIChatCompletionProvider,
@@ -142,6 +143,38 @@ class NoMatchDataHub:
     async def list_schema_fields(self, urn: str) -> dict:
         self.schema_calls.append(urn)
         return {"structuredContent": {"fields": []}}
+
+
+class UnderdeclaringPlanner:
+    """Simulates an LLM planner incorrectly calling a schema question generic."""
+
+    last_mode = "test_underdeclaring_planner"
+
+    async def plan(self, question: str) -> AgentPlan:
+        return AgentPlan(
+            search_terms="marketing",
+            need_schema=False,
+            need_lineage=False,
+            rationale="Intentionally unsafe test plan.",
+        )
+
+
+class UnrelatedSearchDataHub(NoMatchDataHub):
+    def __init__(self) -> None:
+        super().__init__()
+        self.lineage_calls: list[str] = []
+
+    async def search(self, query: str, num_results: int = 10, offset: int = 0) -> dict:
+        assert query == "lineageguard_eval_no_such_asset_7f3c"
+        return {"structuredContent": {"searchResults": [{"entity": {
+            "urn": "urn:li:dataset:(urn:li:dataPlatform:dbt,shop.orders,PROD)",
+            "type": "DATASET", "properties": {"name": "orders"},
+            "platform": {"urn": "urn:li:dataPlatform:dbt"},
+        }}]}}
+
+    async def get_lineage(self, urn: str, direction: str, max_hops: int, max_results: int = 100) -> dict:
+        self.lineage_calls.append(urn)
+        return {"structuredContent": {"downstreams": {"searchResults": []}}}
 
 
 class GuidedAliasIndex:
@@ -561,6 +594,23 @@ async def test_agent_never_reads_schema_for_an_unverified_qdrant_candidate() -> 
     assert datahub.schema_calls == []
     assert response.verification and not response.verification.passed
     assert response.target_resolution and response.target_resolution.status == "NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_explicit_nonexistent_asset_fails_closed_when_llm_underdeclares_schema_intent() -> None:
+    datahub = UnrelatedSearchDataHub()
+    response = await HybridChatAgent(
+        datahub,
+        SchemaIndex(),
+        completion=SafeNoMatchCompletion(),
+        planner=UnderdeclaringPlanner(),
+    ).respond(ChatRequest(message="What is the schema of lineageguard_eval_no_such_asset_7f3c?"))
+
+    assert datahub.schema_calls == []
+    assert datahub.lineage_calls == []
+    assert response.target_resolution and response.target_resolution.status == "NOT_FOUND"
+    assert response.citations == []
+    assert response.verification and not response.verification.passed
 
 
 @pytest.mark.asyncio

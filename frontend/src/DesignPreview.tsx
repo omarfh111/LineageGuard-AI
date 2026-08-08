@@ -154,8 +154,12 @@ function MapView({ onAnalyzeSelected }: { onAnalyzeSelected: (target: VerifiedTa
   }, []);
 
   const nodes = useMemo(() => {
-    const term = query.trim().toLowerCase();
-    return (cache?.graph.nodes ?? []).filter((node) => !term || `${node.label} ${node.entity_type} ${node.platform_urn ?? ""}`.toLowerCase().includes(term));
+    const terms = query.toLowerCase().split(/[\s,]+/).filter(Boolean);
+    return (cache?.graph.nodes ?? []).filter((node) => {
+      if (terms.length === 0) return true;
+      const searchable = `${node.label} ${node.entity_type} ${node.platform_urn ?? ""}`.toLowerCase();
+      return terms.every((term) => searchable.includes(term));
+    });
   }, [cache, query]);
   const visible = useMemo(() => new Set(nodes.map((node) => node.urn)), [nodes]);
   const edges = useMemo(() => (cache?.graph.edges ?? []).filter((edge) => visible.has(edge.source_urn) && visible.has(edge.target_urn)), [cache, visible]);
@@ -322,9 +326,7 @@ function AssistantView({ go, onAnalysisHandoff }: { go: (page: Page) => void; on
     window.requestAnimationFrame(() => viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" }));
   }, [turns.length, busy]);
   async function index() { setBusy("index"); setError(null); try { setStatus(await request<RagStatus>("/api/v1/chat/index/ingest", {})); } catch (caught) { setError(caught instanceof Error ? caught.message : "Indexing unavailable"); } finally { setBusy(null); } }
-  async function ask(event: FormEvent) {
-    event.preventDefault();
-    const question = message.trim();
+  async function askQuestion(question: string) {
     if (!question) return;
     setBusy("query"); setError(null);
     try {
@@ -332,6 +334,10 @@ function AssistantView({ go, onAnalysisHandoff }: { go: (page: Page) => void; on
       setTurns((current) => [...current, { id: crypto.randomUUID(), question, reply }].slice(-6));
       setMessage("");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Question unavailable"); } finally { setBusy(null); }
+  }
+  async function ask(event: FormEvent) {
+    event.preventDefault();
+    await askQuestion(message.trim());
   }
   return <section className="page-content assistant-screen integration-page">
     <div className="page-heading">
@@ -359,7 +365,13 @@ function AssistantView({ go, onAnalysisHandoff }: { go: (page: Page) => void; on
           {turns.length === 0 && <div className="chat-empty"><b>Start with a question</b><span>Choose an example above or ask about a table, dashboard, owner, schema, or lineage.</span></div>}
           {turns.length > 0 && <section className="conversation-history" aria-live="polite">{turns.map((turn) => <div className="conversation-turn" key={turn.id}>
             <div className="user-message"><span>You</span><p>{turn.question}</p></div>
-            <AssistantResponse reply={turn.reply} go={go} onAnalysisHandoff={onAnalysisHandoff} onChooseTarget={(target) => setMessage(`Tell me about the ${displayPlatform(target)} ${target.label} dataset.`)} />
+            <AssistantResponse reply={turn.reply} go={go} onAnalysisHandoff={onAnalysisHandoff} onChooseTarget={(target) => {
+              // Preserve the original intent (schema, lineage, or impact),
+              // then add the user's explicit platform selection. The click
+              // immediately re-runs the same request rather than leaving a
+              // generic, misleading draft in the composer.
+              void askQuestion(`${turn.question}\nUse the ${displayPlatform(target)} asset named ${target.label}.`);
+            }} />
           </div>)}</section>}
         </div>
         <div className="chat-composer">

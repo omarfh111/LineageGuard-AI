@@ -546,6 +546,37 @@ class WritebackService:
                 "DataHub write result is unknown; automatic retry is blocked"
             ) from error
 
+        # A tool acknowledgement alone is not enough to call this a completed
+        # write. Re-read the exact DataHub document and verify its immutable
+        # identity, title, and related asset before recording COMPLETED. If
+        # confirmation cannot be established, preserve the operation in an
+        # explicit reconciliation state rather than showing a false success.
+        try:
+            document_verified = await self.writer.verify(
+                document_urn,
+                pending.document_title,
+                pending.target_asset_urn,
+            )
+        except asyncio.CancelledError:
+            self._mark_unknown(
+                pending, operation_id, "WRITEBACK_VERIFY_CANCELLED", "CancelledError"
+            )
+            raise
+        except Exception as error:
+            self._mark_unknown(
+                pending, operation_id, "WRITEBACK_VERIFY_UNKNOWN", type(error).__name__
+            )
+            raise WritebackOutcomeUnknown(
+                "DataHub accepted the document but post-write verification is unknown; reconcile before retrying"
+            ) from error
+        if not document_verified:
+            self._mark_unknown(
+                pending, operation_id, "WRITEBACK_VERIFY_FAILED", "Document identity could not be verified"
+            )
+            raise WritebackOutcomeUnknown(
+                "DataHub document could not be verified after write; reconcile before retrying"
+            )
+
         completed_snapshot = dict(pending.snapshot)
         completed_snapshot.update(
             {
@@ -554,6 +585,7 @@ class WritebackService:
                 "pre_write_document": None,
                 "active_operation": None,
                 "last_error": None,
+                "post_write_verified": True,
             }
         )
         try:

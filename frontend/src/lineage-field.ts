@@ -457,10 +457,11 @@ export function mountLineageField(container: HTMLElement, options: LineageFieldO
 
   function setQuery(term: string) {
     query = (term || "").trim().toLowerCase();
+    const terms = query.split(/[\s,]+/).filter(Boolean);
     let visible = 0;
     graph.nodes.forEach((node, i) => {
       const haystack = `${node.label} ${node.platformKey} ${node.entityType ?? ""}`.toLowerCase();
-      const hit = !query || haystack.includes(query);
+      const hit = terms.length === 0 || terms.every((item) => haystack.includes(item));
       dimAttr[i] = hit ? 1 : 0.1;
       if (hit) visible += 1;
     });

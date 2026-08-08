@@ -498,6 +498,24 @@ def _fallback_search_terms(question: str) -> str:
 _PLATFORMS = {"snowflake", "dbt", "postgres", "postgresql", "s3", "tableau", "powerbi", "looker", "spark"}
 
 
+def _intent_requirements(question: str) -> tuple[bool, bool]:
+    """Derive non-negotiable read requirements from the user's words.
+
+    The planner improves retrieval, but it must never weaken a safety boundary.
+    In particular, a model planner that accidentally returns ``need_schema=false``
+    cannot turn a precise schema request into a generic catalog answer.
+    """
+
+    lowered = question.casefold()
+    needs_schema = bool(
+        re.search(r"\b(?:schema|field|fields|column|columns|colonne|colonnes|champ|champs|type|types)\b", lowered)
+    )
+    needs_lineage = bool(
+        re.search(r"\b(?:lineage|upstream|downstream|dependency|dependencies|impact|depend|amont|aval)\b", lowered)
+    )
+    return needs_schema, needs_lineage
+
+
 
 def _extract_explicit_urn(question: str) -> str | None:
     """Extract an explicit DataHub URN before interpreting pronouns."""
@@ -877,10 +895,18 @@ class HybridChatAgent:
 
     async def _plan(self, state: AgenticChatState) -> dict[str, object]:
         plan = await self._planner.plan(state["request"].message)
+        inferred_schema, inferred_lineage = _intent_requirements(
+            state["request"].message
+        )
         plan = plan.model_copy(update={
             "search_terms": _search_terms_for_question(
                 state["request"].message, plan.search_terms, state.get("active_asset")
-            )
+            ),
+            # An LLM plan may add work, but it cannot remove a user-explicit
+            # schema or lineage requirement. This is a closed-world safety
+            # requirement, not a prompt-following preference.
+            "need_schema": plan.need_schema or inferred_schema,
+            "need_lineage": plan.need_lineage or inferred_lineage,
         })
         mode = getattr(
             self._planner,

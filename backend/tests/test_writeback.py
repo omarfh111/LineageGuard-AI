@@ -44,7 +44,7 @@ class FakeWriter:
         expected_related_asset: str,
     ) -> bool:
         return (
-            document_urn == "urn:li:document:verified-existing-document"
+            document_urn in {"urn:li:document:run-1", "urn:li:document:concurrent-run", "urn:li:document:verified-existing-document"}
             and expected_title.startswith("LineageGuard analysis ")
             and expected_related_asset.startswith("urn:li:")
         )

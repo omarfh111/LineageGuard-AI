@@ -174,6 +174,13 @@ class JudgingService:
         openai_verdict, groq_verdict = await asyncio.gather(
             openai_judge.evaluate(request), groq_judge.evaluate(request)
         )
+        # A provider may praise a careful remediation plan while overlooking
+        # that the requested change is explicitly known to be incompatible.
+        # That is not eligible for approval in the current review cycle. Keep
+        # the provider result auditable, but turn a nominal PASS into a clear
+        # FAIL with a deterministic safety rationale.
+        openai_verdict = _enforce_nonnegotiable_safety_rules(request, openai_verdict)
+        groq_verdict = _enforce_nonnegotiable_safety_rules(request, groq_verdict)
         return JudgingResult(
             deterministic_validation=validation,
             openai_verdict=openai_verdict,
@@ -186,6 +193,47 @@ class JudgingService:
 
 def get_judging_service() -> JudgingService:
     return JudgingService()
+
+
+def _enforce_nonnegotiable_safety_rules(
+    request: JudgingRequest, verdict: JudgeVerdict
+) -> JudgeVerdict:
+    """Prevent a model's optimistic PASS from bypassing explicit risk facts."""
+
+    change = request.impact_report.request
+    if not (
+        change.change_type is ChangeType.CHANGE_COLUMN_TYPE
+        and change.type_change_compatible is False
+        and verdict.verdict is JudgeStatus.PASS
+    ):
+        return verdict
+
+    issue = (
+        "The proposed column type change is explicitly marked incompatible; "
+        "the current report cannot be approved before downstream remediation."
+    )
+    scores = verdict.scores.model_copy(
+        update={
+            "technical_correctness": min(verdict.scores.technical_correctness, 2),
+            "safety": min(verdict.scores.safety, 1),
+            "actionability": min(verdict.scores.actionability, 3),
+        }
+    )
+    return verdict.model_copy(
+        update={
+            "verdict": JudgeStatus.FAIL,
+            "scores": scores,
+            "critical_errors": [*verdict.critical_errors, issue],
+            "repair_instructions": [
+                *verdict.repair_instructions,
+                "Migrate or isolate affected consumers, then run a fresh read-only analysis and review.",
+            ],
+            "audit_rationale": [
+                *verdict.audit_rationale,
+                "Deterministic safety policy overrode a nominal PASS because compatibility is explicitly false.",
+            ],
+        }
+    )
 
 
 def validate_gate_zero(request: JudgingRequest) -> DeterministicValidation:
