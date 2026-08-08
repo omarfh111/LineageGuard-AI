@@ -166,7 +166,7 @@ test("governed review disables provider actions that cannot run", async ({ page 
   await page.goto("/#/review", { waitUntil: "domcontentloaded" });
 
   await expect(page.getByTestId("governed-review")).toHaveAttribute("data-analysis-run-id", runId);
-  await expect(page.getByRole("button", { name: "NVIDIA unavailable" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "AI critic unavailable" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Judges unavailable" })).toBeDisabled();
   await expect(page.getByText("NVIDIA critic is not configured.")).toBeVisible();
   await expect(page.getByText("Groq judge is not configured.")).toBeVisible();
@@ -178,8 +178,8 @@ test("a failed live provider is circuit-broken for the page session", async ({ p
   await mockApi(page, { nvidiaAvailable: true, criticFails: true });
   await page.goto("/#/review", { waitUntil: "domcontentloaded" });
 
-  await page.getByRole("button", { name: "Run NVIDIA critique" }).click();
+  await page.getByRole("button", { name: "Run AI critic" }).click();
   await expect(page.getByRole("alert")).toContainText("NVIDIA runtime unavailable");
-  await expect(page.getByRole("button", { name: "NVIDIA unavailable" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "AI critic unavailable" })).toBeDisabled();
   await expect(page.getByText(/last live request failed/i)).toBeVisible();
 });

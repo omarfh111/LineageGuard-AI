@@ -329,7 +329,10 @@ export function mountLineageField(container: HTMLElement, options: LineageFieldO
     blending: THREE.AdditiveBlending
   });
   const edgeMaterial = new THREE.LineBasicMaterial({
-    vertexColors: true, transparent: true, opacity: ambient ? 0.62 : 0.78,
+    // A full catalog can contain thousands of converging relationships. Keep
+    // the overview quiet; a hovered or selected asset supplies the bright
+    // contextual path instead of turning the whole canvas into a white fan.
+    vertexColors: true, transparent: true, opacity: ambient ? 0.62 : 0.14,
     depthWrite: false, blending: THREE.AdditiveBlending
   });
   const highlightMaterial = new THREE.LineBasicMaterial({
@@ -358,12 +361,12 @@ export function mountLineageField(container: HTMLElement, options: LineageFieldO
 
   let glowAttr = new Float32Array(0);
   let dimAttr = new Float32Array(0);
-  let baseEdgeOpacity = ambient ? 0.62 : 0.78;
+  let baseEdgeOpacity = ambient ? 0.62 : 0.14;
   let hovered = -1;
   let selected = -1;
   let query = "";
 
-  const PACKETS = ambient ? 70 : 110;
+  const PACKETS = ambient ? 70 : 28;
   const packets = Array.from({ length: PACKETS }, () => ({ edge: 0, t: Math.random(), v: 0.06 + Math.random() * 0.16 }));
   const packetPos = new Float32Array(PACKETS * 3);
   const packetGlow = new Float32Array(PACKETS).fill(0.5);
@@ -445,7 +448,7 @@ export function mountLineageField(container: HTMLElement, options: LineageFieldO
   const target = new THREE.Vector3(ambient ? -24 : 0, ambient ? 2 : 0, 0);
   let yaw = ambient ? -0.55 : -0.62;
   let pitch = ambient ? 0.16 : 0.22;
-  let distance = ambient ? 126 : 108;
+  let distance = ambient ? 126 : 142;
   let distanceTarget = distance;
   let yawVelocity = 0;
   let pitchVelocity = 0;
@@ -506,7 +509,7 @@ export function mountLineageField(container: HTMLElement, options: LineageFieldO
       if (hit) visible += 1;
     });
     nodeGeometry.attributes.dim.needsUpdate = true;
-    baseEdgeOpacity = query ? 0.14 : (ambient ? 0.62 : 0.78);
+    baseEdgeOpacity = query ? 0.08 : (ambient ? 0.62 : 0.14);
     options.onCount?.(visible);
   }
 

@@ -498,6 +498,8 @@ details ul { margin: 10px 0 0; padding-left: 18px; font: 400 12.5px/1.8 var(--lg
   font-size: 11px;
   line-height: 1.6;
 }
+.detail-card .analyze-selected { margin-top: 16px; }
+.detail-card .analysis-target-hint { display: block; margin-top: 16px; font: 400 12px/1.5 var(--lg-sans); color: var(--lg-text-faint); }
 .recent-actions { margin-top: 18px; display: grid; gap: 6px; }
 .recent-actions b { font: 600 12px/1 var(--lg-sans); color: var(--lg-text-soft); }
 .recent-actions small { font: 400 11px/1.5 var(--lg-mono); color: var(--lg-text-faint); }
@@ -639,6 +641,21 @@ details ul { margin: 10px 0 0; padding-left: 18px; font: 400 12.5px/1.8 var(--lg
   font: 500 11px/1 var(--lg-mono);
   color: var(--lg-blue-soft);
 }
+
+.analysis-progress {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 15px 16px;
+  border: 1px solid rgba(76, 141, 255, 0.28);
+  border-radius: 14px;
+  background: rgba(76, 141, 255, 0.08);
+}
+.analysis-progress > div:first-child { display: grid; gap: 4px; }
+.analysis-progress b { font: 600 13px/1.35 var(--lg-sans); color: var(--lg-text); }
+.analysis-progress span, .analysis-progress small { font: 400 11.5px/1.45 var(--lg-sans); color: var(--lg-text-muted); }
+.analysis-progress-track { height: 7px; overflow: hidden; border-radius: 999px; background: rgba(255, 255, 255, 0.09); }
+.analysis-progress-track i { display: block; height: 100%; border-radius: inherit; background: var(--lg-gradient); transition: width 0.35s ease; }
 
 .demo-result, .live-impact {
   border-radius: var(--lg-radius-lg);

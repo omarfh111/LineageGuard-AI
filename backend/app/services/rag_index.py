@@ -351,9 +351,19 @@ class RagIndexCoordinator:
                 query_available=True,
             )
         except Exception as error:
+            # Qdrant's HTTP client deliberately uses a compact exception name
+            # (for example ``UnexpectedResponse``).  Surface an actionable,
+            # secret-free explanation instead of making the UI look like a
+            # failed LLM request.
+            message = (
+                "RAG ingestion could not reach or authenticate with Qdrant. "
+                "Check QDRANT_URL and, for Qdrant Cloud, QDRANT_API_KEY."
+                if type(error).__name__ == "UnexpectedResponse"
+                else f"RAG ingestion failed: {type(error).__name__}"
+            )
             self._status = RagIndexStatus(
                 state=RagIndexState.FAILED,
-                message=f"RAG ingestion failed: {type(error).__name__}",
+                message=message,
                 updated_at=datetime.now(UTC),
                 query_available=self._status.query_available,
             )

@@ -22,6 +22,7 @@ import {
   type ChangeRequestPayload,
   type ChangeType,
   type ChatAnalysisHandoff,
+  type VerifiedTarget,
 } from "./analysisFlow";
 import {
   catalogTopologySignature,
@@ -80,6 +81,7 @@ export default function DesignPreview() {
   const [loading, setLoading] = useState(true);
   const [health, setHealth] = useState<RuntimeHealth | null>(null);
   const [analysisHandoff, setAnalysisHandoff] = useState<ChatAnalysisHandoff | null>(null);
+  const [catalogTarget, setCatalogTarget] = useState<VerifiedTarget | null>(null);
   const [revision, setRevision] = useState<{ request: ChangeRequestPayload; comment: string } | null>(null);
 
   useEffect(() => {
@@ -104,9 +106,9 @@ export default function DesignPreview() {
     </header>
     <main className="preview-main">
       {page === "Accueil" && <AppleHome go={go} />}
-      {page === "Cartographie" && <MapView />}
-      {page === "Assistant" && <AssistantView go={go} onAnalysisHandoff={(handoff) => { setAnalysisHandoff(handoff); go("Nouvelle analyse"); }} />}
-      {page === "Nouvelle analyse" && <AnalysisView go={go} handoff={analysisHandoff} revision={revision} onClearHandoff={() => setAnalysisHandoff(null)} onClearRevision={() => setRevision(null)} />}
+      {page === "Cartographie" && <MapView onAnalyzeSelected={(target) => { setCatalogTarget(target); setAnalysisHandoff(null); go("Nouvelle analyse"); }} />}
+      {page === "Assistant" && <AssistantView go={go} onAnalysisHandoff={(handoff) => { setAnalysisHandoff(handoff); setCatalogTarget(null); go("Nouvelle analyse"); }} />}
+      {page === "Nouvelle analyse" && <AnalysisView go={go} handoff={analysisHandoff} catalogTarget={catalogTarget} revision={revision} onClearHandoff={() => setAnalysisHandoff(null)} onClearCatalogTarget={() => setCatalogTarget(null)} onClearRevision={() => setRevision(null)} />}
       {page === "Suivi" && <FollowUp go={go} />}
       {page === "Santé" && <HealthView health={health} />}
       {page === "Review" && <GovernedReview health={health} onBack={() => go("Nouvelle analyse")} onRevision={(request, comment) => { setRevision({ request, comment }); go("Nouvelle analyse"); }} />}
@@ -118,7 +120,7 @@ export default function DesignPreview() {
   </div>;
 }
 
-function MapView() {
+function MapView({ onAnalyzeSelected }: { onAnalyzeSelected: (target: VerifiedTarget) => void }) {
   const [cache, setCache] = useState<CatalogCache | null>(null);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<CatalogNode | null>(null);
@@ -217,6 +219,9 @@ function MapView() {
   const relationships = selected
     ? edges.filter((edge) => edge.source_urn === selected.urn || edge.target_urn === selected.urn).length
     : null;
+  const analysisTarget = selected
+    ? compatibleAnalysisTarget(selected, cache?.graph.nodes ?? [])
+    : null;
   const clock = (value?: string | null) => (value ? new Date(value).toLocaleTimeString() : "pending");
 
   return <section className="page-content map-page integration-page">
@@ -224,7 +229,7 @@ function MapView() {
       <div>
         <p className="overline">LIVE DATAHUB CATALOG</p>
         <h1>Cartography</h1>
-        <p>Explore live metadata and observed lineage from the shared server cache. Drag to orbit, scroll to zoom, click a node to inspect it.</p>
+        <p>Explore live metadata and observed lineage from the shared server cache. The overview keeps all assets visible while selected lineage is highlighted.</p>
       </div>
       <button className="ghost" onClick={refresh} disabled={busy}>{busy ? "Refreshing…" : "Refresh from DataHub"}</button>
     </div>
@@ -257,10 +262,39 @@ function MapView() {
         <div className="detail-line"><span>Owners</span><b>{selected ? selected.owner_urns.length : "—"}</b></div>
         <div className="detail-line"><span>Relationships</span><b>{relationships ?? "—"}</b></div>
         <code className="urn">{selected ? selected.urn : "Click a node in the graph to inspect its DataHub metadata."}</code>
+        {analysisTarget && <button className="cta wide analyze-selected" onClick={() => onAnalyzeSelected(analysisTarget)}>{selected?.entity_type.toUpperCase() === "SCHEMAFIELD" ? "Analyze parent dataset →" : "Analyze this dataset →"}</button>}
+        {selected && !analysisTarget && <small className="analysis-target-hint">Impact analysis is available for datasets and their schema fields.</small>}
         {selected && selected.recent_actions.length > 0 && <div className="recent-actions"><b>Recent LineageGuard actions</b>{selected.recent_actions.map((action) => <small key={`${action.timestamp}-${action.action}`}>{action.action}: {action.detail}</small>)}</div>}
       </aside>
     </section>
   </section>;
+}
+
+function compatibleAnalysisTarget(selected: CatalogNode, catalog: CatalogNode[]): VerifiedTarget | null {
+  if (selected.entity_type.toUpperCase() === "DATASET") {
+    return { urn: selected.urn, label: selected.label, entity_type: selected.entity_type, platform_urn: selected.platform_urn };
+  }
+  if (selected.entity_type.toUpperCase() !== "SCHEMAFIELD") return null;
+  const parentUrn = schemaFieldParentDatasetUrn(selected.urn);
+  if (!parentUrn) return null;
+  const parent = catalog.find((node) => node.urn === parentUrn);
+  return parent
+    ? { urn: parent.urn, label: parent.label, entity_type: parent.entity_type, platform_urn: parent.platform_urn }
+    : { urn: parentUrn, label: "Parent dataset", entity_type: "DATASET", platform_urn: selected.platform_urn };
+}
+
+/** Extract the dataset portion of a DataHub schema-field URN without guessing a name. */
+function schemaFieldParentDatasetUrn(urn: string): string | null {
+  const prefix = "urn:li:schemaField:(urn:li:dataset:(";
+  if (!urn.startsWith(prefix) || !urn.endsWith(")")) return null;
+  const datasetOpen = prefix.length - 1;
+  let depth = 0;
+  for (let index = datasetOpen; index < urn.length; index += 1) {
+    if (urn[index] === "(") depth += 1;
+    if (urn[index] === ")") depth -= 1;
+    if (depth === 0) return urn.slice("urn:li:schemaField:(".length, index + 1);
+  }
+  return null;
 }
 
 function AssistantView({ go, onAnalysisHandoff }: { go: (page: Page) => void; onAnalysisHandoff: (handoff: ChatAnalysisHandoff) => void }) {
@@ -357,11 +391,13 @@ function evidenceTool(kind: string) {
   return kind === "schema" ? "list_schema_fields" : kind === "lineage" ? "get_lineage" : "search";
 }
 
-function AnalysisView({ go, handoff, revision, onClearHandoff, onClearRevision }: {
+function AnalysisView({ go, handoff, catalogTarget, revision, onClearHandoff, onClearCatalogTarget, onClearRevision }: {
   go: (page: Page) => void;
   handoff: ChatAnalysisHandoff | null;
+  catalogTarget: VerifiedTarget | null;
   revision: { request: ChangeRequestPayload; comment: string } | null;
   onClearHandoff: () => void;
+  onClearCatalogTarget: () => void;
   onClearRevision: () => void;
 }) {
   const [assetUrn, setAssetUrn] = useState("urn:li:dataset:(urn:li:dataPlatform:dbt,b2fd91.order_entry_db.order_entry.orders,PROD)");
@@ -375,9 +411,11 @@ function AnalysisView({ go, handoff, revision, onClearHandoff, onClearRevision }
   const [execution, setExecution] = useState<WorkflowExecution | null>(null);
   const [submittedFingerprint, setSubmittedFingerprint] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [restoredFromServer, setRestoredFromServer] = useState(false);
   const restoreAttempted = useRef(false);
+  const progressTimer = useRef<number | null>(null);
   const sessionId = useMemo(chatSessionId, []);
   const draft = useMemo<AnalysisDraft>(() => ({
     assetUrn,
@@ -407,6 +445,19 @@ function AnalysisView({ go, handoff, revision, onClearHandoff, onClearRevision }
     setRestoredFromServer(false);
     clearAnalysisRun(window.sessionStorage);
   }, [handoff]);
+
+  useEffect(() => {
+    if (!catalogTarget || handoff) return;
+    setAssetUrn(catalogTarget.urn);
+    setExecution(null);
+    setSubmittedFingerprint(null);
+    setRestoredFromServer(false);
+    clearAnalysisRun(window.sessionStorage);
+  }, [catalogTarget, handoff]);
+
+  useEffect(() => () => {
+    if (progressTimer.current !== null) window.clearInterval(progressTimer.current);
+  }, []);
 
   useEffect(() => {
     if (!revision) return;
@@ -476,6 +527,10 @@ function AnalysisView({ go, handoff, revision, onClearHandoff, onClearRevision }
       return;
     }
     setBusy(true);
+    setAnalysisProgress(12);
+    progressTimer.current = window.setInterval(() => {
+      setAnalysisProgress((current) => Math.min(current + 9, 90));
+    }, 650);
     setError(null);
     try {
       const result = handoff
@@ -491,10 +546,14 @@ function AnalysisView({ go, handoff, revision, onClearHandoff, onClearRevision }
       setRestoredFromServer(false);
       saveAnalysisRun(window.sessionStorage, result.analysis_run_id);
       if (handoff) onClearHandoff();
+      if (catalogTarget) onClearCatalogTarget();
       if (revision) onClearRevision();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Analysis unavailable");
     } finally {
+      if (progressTimer.current !== null) window.clearInterval(progressTimer.current);
+      progressTimer.current = null;
+      setAnalysisProgress(100);
       setBusy(false);
     }
   }
@@ -507,8 +566,9 @@ function AnalysisView({ go, handoff, revision, onClearHandoff, onClearRevision }
       <form className="card form-card" onSubmit={analyze}>
         <div className="step-number">01</div><h2>Your change</h2>
         {handoff && <div className="verified-handoff"><b>MCP-verified target</b><span>{handoff.target.label}</span><code>{handoff.target.urn}</code><button type="button" className="ghost" onClick={onClearHandoff}>Choose another asset</button></div>}
+        {catalogTarget && !handoff && <div className="verified-handoff"><b>Catalog-selected target</b><span>{catalogTarget.label}</span><code>{catalogTarget.urn}</code><small>Selected from the live DataHub catalog. The analysis remains read-only.</small><button type="button" className="ghost" onClick={onClearCatalogTarget}>Choose another asset</button></div>}
         {revision && <div className="verified-handoff"><b>Revision requested</b><span>{revision.comment}</span><small>Change at least one field. Prior judge and approval authority cannot be reused.</small></div>}
-        <label>DataHub asset URN<input value={assetUrn} onChange={(event) => { setAssetUrn(event.target.value); if (handoff) onClearHandoff(); }} readOnly={handoff !== null} required /></label>
+        <label>DataHub asset URN<input value={assetUrn} onChange={(event) => { setAssetUrn(event.target.value); if (handoff) onClearHandoff(); if (catalogTarget) onClearCatalogTarget(); }} readOnly={handoff !== null} required /></label>
         <div className="field-pair">
           <label>Change type<select value={changeType} onChange={(event) => setChangeType(event.target.value as ChangeType)}><option value="ADD_COLUMN">Add a column</option><option value="RENAME_COLUMN">Rename a column</option><option value="CHANGE_COLUMN_TYPE">Change a column type</option><option value="DROP_COLUMN">Drop a column</option></select></label>
           <label>{changeType === "ADD_COLUMN" ? "New column name" : "Existing column name"}<input value={columnName} onChange={(event) => setColumnName(event.target.value)} required /></label>
@@ -522,6 +582,7 @@ function AnalysisView({ go, handoff, revision, onClearHandoff, onClearRevision }
         <label>Reason<textarea value={reason} onChange={(event) => setReason(event.target.value)} required /></label>
         {errors.length > 0 && <ul className="integration-errors">{errors.map((item) => <li key={item}>{item}</li>)}</ul>}
         <button className="cta wide" disabled={busy || errors.length > 0 || (revisionFingerprint !== null && fingerprint === revisionFingerprint)}>{busy ? "Reading DataHub…" : revision ? "Run revised analysis →" : "Analyze impact →"}</button>
+        {busy && <section className="analysis-progress" role="status" aria-live="polite"><div><b>Building the read-only impact report</b><span>{analysisProgress < 35 ? "Resolving the selected DataHub asset" : analysisProgress < 70 ? "Reading lineage and impact evidence" : "Calculating risk and remediation"}</span></div><div className="analysis-progress-track"><i style={{ width: `${analysisProgress}%` }} /></div><small>{analysisProgress}% · The analysis never modifies DataHub.</small></section>}
         {revisionFingerprint !== null && fingerprint === revisionFingerprint && <p className="integration-error">A revision must change at least one request field.</p>}
     {error && <p className="integration-error">{error}</p>}
     {restoredFromServer && <p className="cache-observability" data-testid="workflow-restore-status">Read-only analysis restored from the server. Judge and approval authority were reset.</p>}
