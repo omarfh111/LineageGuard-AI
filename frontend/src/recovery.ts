@@ -113,6 +113,29 @@ function catalogEdgeKey(edge: CatalogEdgeIdentity): string {
   return `${edge.source_urn}\u0000${edge.target_urn}\u0000${edge.direction}\u0000${edge.hops}`;
 }
 
+type CatalogTopologyEdge = { source_urn: string; target_urn: string };
+
+/**
+ * Identity of the graph shape the WebGL lineage field actually consumes: node
+ * URNs plus directed source→target pairs. Display metadata and lineage hop
+ * labels are deliberately excluded.
+ *
+ * The server-owned cache is re-polled every few seconds and returns a fresh
+ * object each time, so an unguarded data push would re-run the field's
+ * O(n²) relaxation layout on every poll. Comparing this signature keeps the
+ * expensive relayout for genuine topology changes.
+ */
+export function catalogTopologySignature(
+  nodes: CatalogNodeIdentity[],
+  edges: CatalogTopologyEdge[],
+): string {
+  const nodeIdentity = nodes.map((node) => node.urn).sort();
+  const edgeIdentity = edges
+    .map((edge) => `${edge.source_urn}\u0000${edge.target_urn}`)
+    .sort();
+  return `${nodeIdentity.join("\u0000")}\u0001${edgeIdentity.join("\u0000")}`;
+}
+
 export function saveAnalysisRun(storage: Storage, runId: string): void {
   if (!uuidPattern.test(runId)) throw new Error("Invalid analysis run identifier");
   storage.setItem(analysisRunKey, runId);

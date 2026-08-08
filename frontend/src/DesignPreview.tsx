@@ -1,8 +1,7 @@
 import { FormEvent, Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
-import { browserRandomUuid } from "./browserId";
 import AppleHome from "./AppleHome";
-import AssistantAnswer, { type ChatReply } from "./AssistantAnswer";
 import GovernedReview from "./GovernedReview";
+import type { FieldData } from "./lineage-field";
 import "./design-preview.css";
 import "./preview-reset.css";
 import "./design-v2.css";
@@ -10,6 +9,8 @@ import "./motion-typography.css";
 import "./motion-fixes.css";
 import "./navigation-motion.css";
 import "./integration.css";
+// The premium dark theme overrides every sheet above; keep it last.
+import "./premium.css";
 import {
   buildChangeRequest,
   createChatHandoff,
@@ -23,6 +24,7 @@ import {
   type ChatAnalysisHandoff,
 } from "./analysisFlow";
 import {
+  catalogTopologySignature,
   clearAnalysisRun,
   loadAnalysisRun,
   recoverCatalogGraph,
@@ -30,16 +32,19 @@ import {
   stabilizeCatalogGraphData,
   type StableCatalogGraphData,
 } from "./recovery";
+import { platformCss, platformKey } from "./platformPalette";
 import type { RuntimeHealth } from "./runtimeHealth";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
-const ForceGraph3D = lazy(() => import("react-force-graph-3d"));
+// Three.js stays in its own chunk so the shell still paints without it.
+const LineageField = lazy(() => import("./LineageField"));
 
 type Page = "Accueil" | "Cartographie" | "Assistant" | "Nouvelle analyse" | "Suivi" | "Santé" | "Review";
 type CatalogNode = { urn: string; label: string; entity_type: string; platform_urn?: string | null; owner_urns: string[]; recent_actions: Array<{ timestamp: string; action: string; detail: string }> };
 type CatalogEdge = { source_urn: string; target_urn: string; direction: string; hops: number };
 type CatalogCache = { status: { state: string; loaded_assets: number; loaded_edges: number; message: string; last_updated_at?: string | null; last_checked_at?: string | null; refresh_reason?: string | null; refresh_in_progress: boolean; consecutive_failures: number; last_error?: string | null; detected_change?: string | null; generation: number }; graph: { nodes: CatalogNode[]; edges: CatalogEdge[]; truncated: boolean } };
 type RagStatus = { state: string; indexed_assets: number; total_assets: number; message: string; query_available: boolean };
+type ChatReply = { answer: string; verification_note: string; citations: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null; source: string }>; target_resolution?: { status: "NOT_REQUIRED" | "RESOLVED" | "AMBIGUOUS" | "NOT_FOUND"; detail: string; targets: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null }> } | null; verification?: { passed: boolean; factual_claim_count: number; supported_claim_count: number; claim_coverage: number } | null; action_proposal: { action: "NONE" | "ANALYZE_IMPACT" | "HITL_WRITEBACK"; reason: string }; analysis_handoff_id?: string | null; analysis_handoff_expires_at?: string | null; evidence?: Array<{ id: string; kind: string; asset_urn: string; summary: string; facts: string[] }>; agent_trace: Array<{ id: string; label: string; status: string; detail: string }> };
 type WorkflowExecution = { analysis_run_id: string; impact_report: { request: ChangeRequestPayload; blast_radius: number; confidence: number; risk_assessment: { level: string; score: number }; impacted_assets: Array<{ asset_urn: string; criticality: string }>; evidence_bundle: { items: unknown[] } }; remediation_plan: { migration_steps: Array<{ order: number; action: string; rationale: string }> } };
 type RunSummary = { run_id: string; decision: string | null; openai_status: string | null; groq_status: string | null };
 
@@ -60,7 +65,7 @@ function chatSessionId() {
   const key = "lineageguard-chat-session";
   const current = window.localStorage.getItem(key);
   if (current) return current;
-  const created = browserRandomUuid().replaceAll("-", "");
+  const created = crypto.randomUUID().replaceAll("-", "");
   window.localStorage.setItem(key, created);
   return created;
 }
@@ -91,14 +96,13 @@ export default function DesignPreview() {
   const isHealthy = health?.status === "ok";
 
   return <div className="preview-app">
-    {loading && <div className="preview-loader"><div className="loader-logo">LG</div><b>LineageGuard</b><span>Preparing your governed workspace</span><i /></div>}
+    {loading && <div className="preview-loader"><div className="loader-logo"><img src="/lineageguard-logo.png" alt="" /></div><b>LineageGuard</b><span>Preparing your governed workspace</span><i /></div>}
     <header className="site-nav">
-      <button className="preview-brand" onClick={() => go("Accueil")}><span>LG</span><b>LineageGuard</b></button>
+      <button className="preview-brand" onClick={() => go("Accueil")}><img src="/lineageguard-logo.png" alt="" /><b>LineageGuard</b></button>
       <nav>{navigationPages.map((item) => <button key={item} onClick={() => go(item)} className={page === item ? "selected" : ""}><span>{icon(item)}</span>{pageLabel(item)}</button>)}</nav>
       <div className={`nav-health ${isHealthy ? "healthy" : "unavailable"}`}><i /> {isHealthy ? "Platform operational" : "Checking platform"}</div>
     </header>
     <main className="preview-main">
-      {page !== "Accueil" && <header className="preview-top"><div className="crumb"><span>Platform</span><b> / {pageLabel(page)}</b></div><div className="top-actions"><button className="help" title="Use the acceptance plan for professional tests">?</button><div className={`online ${isHealthy ? "healthy" : ""}`}><i /> {isHealthy ? "Live services" : "Service check"}</div></div></header>}
       {page === "Accueil" && <AppleHome go={go} />}
       {page === "Cartographie" && <MapView />}
       {page === "Assistant" && <AssistantView go={go} onAnalysisHandoff={(handoff) => { setAnalysisHandoff(handoff); go("Nouvelle analyse"); }} />}
@@ -107,6 +111,10 @@ export default function DesignPreview() {
       {page === "Santé" && <HealthView health={health} />}
       {page === "Review" && <GovernedReview health={health} onBack={() => go("Nouvelle analyse")} onRevision={(request, comment) => { setRevision({ request, comment }); go("Nouvelle analyse"); }} />}
     </main>
+    <footer className="site-footer">
+      <span>LineageGuard AI · Apache-2.0 · read-only by default</span>
+      <span>DataHub OSS + official MCP server · LangGraph · Qdrant</span>
+    </footer>
   </div>;
 }
 
@@ -117,12 +125,15 @@ function MapView() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const stableGraph = useRef<StableCatalogGraphData<CatalogNode, CatalogEdge> | null>(null);
+  const stableField = useRef<{ signature: string; data: FieldData } | null>(null);
 
   useEffect(() => {
     const load = () => request<CatalogCache>("/api/v1/datahub/catalog/cache").then((snapshot) => {
       setCache((current) => {
         const graph = recoverCatalogGraph(current?.graph ?? null, snapshot.graph) as CatalogCache["graph"];
-        setSelected((selectedNode) => graph.nodes.find((node) => node.urn === selectedNode?.urn) ?? selectedNode ?? graph.nodes[0] ?? null);
+        // Keep an existing selection alive across polls, but never auto-select:
+        // the aside states plainly that nothing is selected until a node is clicked.
+        setSelected((selectedNode) => (selectedNode ? graph.nodes.find((node) => node.urn === selectedNode.urn) ?? selectedNode : null));
         return {
           ...snapshot,
           status: {
@@ -150,6 +161,41 @@ function MapView() {
     stableGraph.current = stabilized;
     return stabilized.data;
   }, [nodes, edges]);
+  // The lineage field receives the complete cached graph and dims non-matching
+  // nodes itself, so text search never rebuilds the constellation. The payload
+  // keeps its identity while the topology is unchanged, so a five-second poll
+  // cannot re-run the field's layout pass.
+  const fieldData = useMemo<FieldData>(() => {
+    const cachedNodes = cache?.graph.nodes ?? [];
+    const cachedEdges = cache?.graph.edges ?? [];
+    const signature = catalogTopologySignature(cachedNodes, cachedEdges);
+    if (stableField.current?.signature === signature) return stableField.current.data;
+    const next: FieldData = {
+      nodes: cachedNodes.map((node) => ({
+        urn: node.urn,
+        label: node.label,
+        platform: node.platform_urn ?? undefined,
+        entityType: node.entity_type,
+        owners: node.owner_urns.length,
+      })),
+      edges: cachedEdges.map((edge) => ({ source: edge.source_urn, target: edge.target_urn })),
+    };
+    stableField.current = { signature, data: next };
+    return next;
+  }, [cache?.graph]);
+  // Legend entries are the platforms actually present, coloured by the exact
+  // mapping the renderer uses for its nodes.
+  const legend = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const node of cache?.graph.nodes ?? []) {
+      const key = platformKey(node.platform_urn);
+      if (key !== "unknown") counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 6)
+      .map(([key]) => ({ key, color: platformCss(key) }));
+  }, [cache?.graph]);
 
   async function refresh() {
     setBusy(true); setError(null);
@@ -168,12 +214,52 @@ function MapView() {
     finally { setBusy(false); }
   }
 
-  return <section className="page-content integration-page">
-    <div className="page-heading"><div><p className="overline">LIVE DATAHUB CATALOG</p><h1>Cartography</h1><p>Explore live metadata and observed lineage from the shared server cache.</p></div><button className="ghost" onClick={refresh} disabled={busy}>{busy ? "Refreshing…" : "Refresh from DataHub"}</button></div>
+  const relationships = selected
+    ? edges.filter((edge) => edge.source_urn === selected.urn || edge.target_urn === selected.urn).length
+    : null;
+  const clock = (value?: string | null) => (value ? new Date(value).toLocaleTimeString() : "pending");
+
+  return <section className="page-content map-page integration-page">
+    <div className="page-heading">
+      <div>
+        <p className="overline">LIVE DATAHUB CATALOG</p>
+        <h1>Cartography</h1>
+        <p>Explore live metadata and observed lineage from the shared server cache. Drag to orbit, scroll to zoom, click a node to inspect it.</p>
+      </div>
+      <button className="ghost" onClick={refresh} disabled={busy}>{busy ? "Refreshing…" : "Refresh from DataHub"}</button>
+    </div>
     {error && <p className="integration-error">{error}</p>}
-    <div className="map-stats" data-testid="catalog-cache-status"><span><i className="blue-dot" /> {cache?.status.loaded_assets ?? 0} assets</span><span><i className="purple-dot" /> {cache?.status.loaded_edges ?? 0} relationships</span><span data-testid="catalog-cache-state"><i className="mint-dot" /> {cache?.status.refresh_in_progress ? "REFRESHING" : cache?.status.state ?? "CONNECTING"} · {cache?.status.message ?? "Waiting for the server cache"}</span></div>
-    {cache && <p className="cache-observability">Generation {cache.status.generation} · last successful refresh {cache.status.last_updated_at ? new Date(cache.status.last_updated_at).toLocaleTimeString() : "pending"} · last change check {cache.status.last_checked_at ? new Date(cache.status.last_checked_at).toLocaleTimeString() : "pending"}{cache.status.detected_change ? ` · detected ${cache.status.detected_change}` : ""}{cache.status.last_error ? ` · ${cache.status.last_error}` : ""}</p>}
-    <section className="map-layout live-map-layout" data-testid="catalog-graph" data-node-count={nodes.length} data-edge-count={edges.length}><div className="card map-card"><div className="map-toolbar"><label className="live-search">Search the loaded catalog<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="orders, dashboard, snowflake…" /></label><span>{nodes.length} shown</span></div><div className="live-map-canvas"><Suspense fallback={<p>Loading 3D renderer…</p>}><ForceGraph3D graphData={graphData} width={900} height={540} backgroundColor="#071126" nodeRelSize={5} nodeColor={(node: object) => colorFor((node as CatalogNode).platform_urn ?? (node as CatalogNode).entity_type)} linkColor={() => "#6e9ec5"} linkOpacity={0.65} nodeLabel={(node: object) => nodeTooltip(node as CatalogNode)} linkLabel={(link: object) => (link as { label: string }).label} onNodeClick={(node: object) => setSelected(node as CatalogNode)} /></Suspense></div></div><aside className="card detail-card">{selected ? <><div className="detail-symbol">◈</div><p className="overline">LIVE SELECTION</p><h2>{selected.label}</h2><span className="data-pill">{selected.entity_type}</span><hr /><div className="detail-line"><span>Platform</span><b>{platformName(selected.platform_urn)}</b></div><div className="detail-line"><span>Owners</span><b>{selected.owner_urns.length}</b></div><div className="detail-line"><span>Relationships</span><b>{edges.filter((edge) => edge.source_urn === selected.urn || edge.target_urn === selected.urn).length}</b></div><code className="urn">{selected.urn}</code>{selected.recent_actions.length > 0 && <div className="recent-actions"><b>Recent LineageGuard actions</b>{selected.recent_actions.map((action) => <small key={`${action.timestamp}-${action.action}`}>{action.action}: {action.detail}</small>)}</div>}</> : <p>Select a node to inspect its DataHub metadata.</p>}</aside></section>
+    <div className="map-stats" data-testid="catalog-cache-status">
+      <span><i className="blue-dot" /> {cache?.status.loaded_assets ?? 0} assets</span>
+      <span><i className="purple-dot" /> {cache?.status.loaded_edges ?? 0} relationships</span>
+      <span className="stat-live" data-testid="catalog-cache-state"><i className="mint-dot" /> {cache?.status.refresh_in_progress ? "REFRESHING" : cache?.status.state ?? "CONNECTING"} · {cache?.status.message ?? "Waiting for the server cache"}</span>
+    </div>
+    <section className="map-layout live-map-layout" data-testid="catalog-graph" data-node-count={nodes.length} data-edge-count={edges.length}>
+      <div className="card map-card">
+        <div className="map-toolbar">
+          <input aria-label="Search the loaded catalog" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="orders, dashboard, snowflake…" />
+          <div className="platform-legend">{legend.map((item) => <span key={item.key}><i style={{ background: item.color }} /> {item.key}</span>)}</div>
+        </div>
+        <div className="live-map-canvas">
+          <Suspense fallback={<p>Loading 3D renderer…</p>}><LineageField mode="interactive" data={fieldData} query={query} selectedUrn={selected?.urn ?? null} onSelect={(node) => setSelected(node ? (cache?.graph.nodes ?? []).find((item) => item.urn === node.urn) ?? null : null)} /></Suspense>
+        </div>
+        <div className="map-footbar">
+          <span>{nodes.length} shown · generation {cache?.status.generation ?? 0} · last refresh {clock(cache?.status.last_updated_at)} · last change check {clock(cache?.status.last_checked_at)}{cache?.status.detected_change ? ` · detected ${cache.status.detected_change}` : ""}{cache?.status.last_error ? ` · ${cache.status.last_error}` : ""}</span>
+          <span>drag · scroll · click</span>
+        </div>
+      </div>
+      <aside className="card detail-card">
+        <p className="overline">LIVE SELECTION</p>
+        <h2>{selected ? selected.label : "Nothing selected"}</h2>
+        <span className="data-pill">{selected ? selected.entity_type : "NO SELECTION"}</span>
+        <hr />
+        <div className="detail-line"><span>Platform</span><b>{selected ? platformName(selected.platform_urn) : "—"}</b></div>
+        <div className="detail-line"><span>Owners</span><b>{selected ? selected.owner_urns.length : "—"}</b></div>
+        <div className="detail-line"><span>Relationships</span><b>{relationships ?? "—"}</b></div>
+        <code className="urn">{selected ? selected.urn : "Click a node in the graph to inspect its DataHub metadata."}</code>
+        {selected && selected.recent_actions.length > 0 && <div className="recent-actions"><b>Recent LineageGuard actions</b>{selected.recent_actions.map((action) => <small key={`${action.timestamp}-${action.action}`}>{action.action}: {action.detail}</small>)}</div>}
+      </aside>
+    </section>
   </section>;
 }
 
@@ -204,12 +290,71 @@ function AssistantView({ go, onAnalysisHandoff }: { go: (page: Page) => void; on
     expiresAt: reply.analysis_handoff_expires_at,
   }) : null;
 
-  return <section className="page-content assistant-screen integration-page"><div className="page-heading"><div><p className="overline">AGENTIC RAG + DATAHUB MCP</p><h1>Assistant</h1><p>Answers are verified against live DataHub evidence before they are presented as facts.</p></div><div className={`assistant-status ${ready ? "ready" : ""}`}><i /> {ready ? (status?.state === "RUNNING" ? "Chat ready · indexing" : "Index ready") : status?.state ?? "Index unavailable"}</div></div>
-    <div className="assistant-board live-assistant"><div className="assistant-intro"><div className="assistant-mark">✦</div><h2>What do you want to understand?</h2><p>{status?.message ?? "Start controlled metadata indexing to enable the assistant."}</p><div className="suggestions"><button onClick={() => setMessage("Tell me about the orders dataset.")}>Tell me about orders</button><button onClick={() => setMessage("Show the downstream lineage of the orders dataset.")}>Show downstream lineage</button><button onClick={() => setMessage("What is the schema of the Snowflake orders dataset?")}>Inspect a schema</button></div><div className="assistant-controls"><button className="ghost" onClick={index} disabled={busy !== null || status?.state === "RUNNING"}>{status?.state === "RUNNING" ? "Indexing…" : "Index DataHub metadata"}</button><label><input type="checkbox" checked={memoryEnabled} onChange={(event) => setMemoryEnabled(event.target.checked)} /> Conversation memory</label></div></div>
-      <form className="message-box live-message" onSubmit={ask}><span>✦</span><input value={message} onChange={(event) => setMessage(event.target.value)} disabled={!ready || busy !== null} placeholder={ready ? "Ask a question about DataHub…" : "Index metadata first"} /><button disabled={!ready || busy !== null}>{busy === "query" ? "…" : "↑"}</button></form>
+  const verification = reply?.verification;
+  const resolved = reply?.target_resolution;
+  return <section className="page-content assistant-screen integration-page">
+    <div className="page-heading">
+      <div>
+        <p className="overline">AGENTIC RAG + DATAHUB MCP</p>
+        <h1>Assistant</h1>
+        <p>Answers are verified against live DataHub evidence before they are presented as facts.</p>
+      </div>
+      <div className={`assistant-status ${ready ? "ready" : ""}`}><i /> {ready ? (status?.state === "RUNNING" ? "CHAT READY · INDEXING" : "INDEX READY") : status?.state ?? "INDEX UNAVAILABLE"}</div>
+    </div>
+    <div className="assistant-board live-assistant">
+      <div className="assistant-intro">
+        <div className="assistant-mark">✦</div>
+        <h2>What do you want to understand?</h2>
+        <p>{status?.message ?? "Start controlled metadata indexing to enable the assistant."}</p>
+        <div className="suggestions">
+          <button onClick={() => setMessage("Tell me about the orders dataset.")}>Tell me about orders</button>
+          <button onClick={() => setMessage("Show the downstream lineage of the orders dataset.")}>Show downstream lineage</button>
+          <button onClick={() => setMessage("What is the schema of the Snowflake orders dataset?")}>Inspect a schema</button>
+        </div>
+        <form className="message-box live-message" onSubmit={ask}>
+          <span>✦</span>
+          <input value={message} onChange={(event) => setMessage(event.target.value)} disabled={!ready || busy !== null} placeholder={ready ? "Ask a question about DataHub…" : "Index metadata first"} />
+          <button disabled={!ready || busy !== null}>{busy === "query" ? "…" : "↑"}</button>
+        </form>
+        <div className="assistant-controls">
+          <button className="ghost" onClick={index} disabled={busy !== null || status?.state === "RUNNING"}>{status?.state === "RUNNING" ? "Indexing…" : "Index DataHub metadata"}</button>
+          <label><input type="checkbox" checked={memoryEnabled} onChange={(event) => setMemoryEnabled(event.target.checked)} /> Conversation memory</label>
+        </div>
+      </div>
       {error && <p className="integration-error">{error}</p>}
-      {reply && <AssistantAnswer reply={reply} outcome={outcome ?? "LIMITED"} canAnalyze={isHandoffUsable(handoff)} onAnalyze={() => handoff && onAnalysisHandoff(handoff)} onOpenReview={() => go("Review")} />}</div>
+      {reply && <article className={`live-answer ${verification?.passed ? "verified" : ""}`}>
+        <div className="answer-status">
+          <b>{outcome}</b>
+          {verification && <span>{verification.factual_claim_count} claims · {verification.supported_claim_count} supported · {Math.round(verification.claim_coverage * 100)}% coverage</span>}
+        </div>
+        <p>{reply.answer}</p>
+        {resolved && resolved.status !== "NOT_REQUIRED" && <div className="target-resolution">
+          <p className="overline">TARGET RESOLUTION · {resolved.status === "RESOLVED" ? "LOCKED" : resolved.status}</p>
+          {resolved.targets.map((target) => <code key={target.urn}>{target.urn}</code>)}
+          <p>{resolved.detail}</p>
+        </div>}
+        {(reply.evidence ?? []).length > 0 && <div className="evidence-grid">
+          {(reply.evidence ?? []).map((item) => <div key={item.id}>
+            <span>{item.id} · {evidenceTool(item.kind)}</span>
+            <p>{item.facts.slice(0, 3).join(" · ") || item.summary}</p>
+          </div>)}
+        </div>}
+        <div className="evidence-tags">{reply.citations.map((citation) => <code key={`${citation.source}-${citation.urn}`}>{citation.label} · {citation.source === "datahub_mcp_live" ? "MCP verified" : "RAG context"}</code>)}</div>
+        <details><summary>Public agent trace</summary><ul>{reply.agent_trace.map((step) => <li key={`${step.id}-${step.detail}`}>{step.id} · {step.status} · {step.detail}</li>)}</ul></details>
+        {reply.action_proposal.action !== "NONE" && <div className="action-callout">
+          <b>{reply.action_proposal.action}</b>
+          <p>{reply.action_proposal.reason}</p>
+          {reply.action_proposal.action === "ANALYZE_IMPACT" && <><button className="cta" onClick={() => handoff && onAnalysisHandoff(handoff)} disabled={!isHandoffUsable(handoff)}>Analyze impact on this target →</button>{!handoff && <small>A live, unambiguous DataHub target is required before analysis.</small>}</>}
+          {reply.action_proposal.action === "HITL_WRITEBACK" && <button className="ghost" onClick={() => go("Review")}>Open governed review →</button>}
+        </div>}
+        <span className="verification-note">{reply.verification_note}</span>
+      </article>}
+    </div>
   </section>;
+}
+
+function evidenceTool(kind: string) {
+  return kind === "schema" ? "list_schema_fields" : kind === "lineage" ? "get_lineage" : "search";
 }
 
 function AnalysisView({ go, handoff, revision, onClearHandoff, onClearRevision }: {
@@ -364,12 +509,16 @@ function AnalysisView({ go, handoff, revision, onClearHandoff, onClearRevision }
         {handoff && <div className="verified-handoff"><b>MCP-verified target</b><span>{handoff.target.label}</span><code>{handoff.target.urn}</code><button type="button" className="ghost" onClick={onClearHandoff}>Choose another asset</button></div>}
         {revision && <div className="verified-handoff"><b>Revision requested</b><span>{revision.comment}</span><small>Change at least one field. Prior judge and approval authority cannot be reused.</small></div>}
         <label>DataHub asset URN<input value={assetUrn} onChange={(event) => { setAssetUrn(event.target.value); if (handoff) onClearHandoff(); }} readOnly={handoff !== null} required /></label>
-        <label>Change type<select value={changeType} onChange={(event) => setChangeType(event.target.value as ChangeType)}><option value="ADD_COLUMN">Add a column</option><option value="RENAME_COLUMN">Rename a column</option><option value="CHANGE_COLUMN_TYPE">Change a column type</option><option value="DROP_COLUMN">Drop a column</option></select></label>
-        <label>{changeType === "ADD_COLUMN" ? "New column name" : "Existing column name"}<input value={columnName} onChange={(event) => setColumnName(event.target.value)} required /></label>
-        {needsNewValue && <label>{changeType === "RENAME_COLUMN" ? "New column name" : "New data type"}<input value={newValue} onChange={(event) => setNewValue(event.target.value)} required /></label>}
-        {changeType === "ADD_COLUMN" && <label>Nullability<select value={columnNullable ? "true" : "false"} onChange={(event) => setColumnNullable(event.target.value === "true")}><option value="true">Nullable</option><option value="false">Non-nullable</option></select></label>}
-        {changeType === "CHANGE_COLUMN_TYPE" && <label>Known compatibility<select value={typeChangeCompatible === null ? "unknown" : String(typeChangeCompatible)} onChange={(event) => setTypeChangeCompatible(event.target.value === "unknown" ? null : event.target.value === "true")}><option value="unknown">Determine during analysis</option><option value="true">Compatible</option><option value="false">Incompatible</option></select></label>}
-        <label>Lineage depth<select value={depth} onChange={(event) => setDepth(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} hop(s)</option>)}</select></label>
+        <div className="field-pair">
+          <label>Change type<select value={changeType} onChange={(event) => setChangeType(event.target.value as ChangeType)}><option value="ADD_COLUMN">Add a column</option><option value="RENAME_COLUMN">Rename a column</option><option value="CHANGE_COLUMN_TYPE">Change a column type</option><option value="DROP_COLUMN">Drop a column</option></select></label>
+          <label>{changeType === "ADD_COLUMN" ? "New column name" : "Existing column name"}<input value={columnName} onChange={(event) => setColumnName(event.target.value)} required /></label>
+        </div>
+        <div className="field-pair">
+          {needsNewValue && <label>{changeType === "RENAME_COLUMN" ? "New column name" : "New data type"}<input value={newValue} onChange={(event) => setNewValue(event.target.value)} required /></label>}
+          {changeType === "ADD_COLUMN" && <label>Nullability<select value={columnNullable ? "true" : "false"} onChange={(event) => setColumnNullable(event.target.value === "true")}><option value="true">Nullable</option><option value="false">Non-nullable</option></select></label>}
+          {changeType === "CHANGE_COLUMN_TYPE" && <label>Known compatibility<select value={typeChangeCompatible === null ? "unknown" : String(typeChangeCompatible)} onChange={(event) => setTypeChangeCompatible(event.target.value === "unknown" ? null : event.target.value === "true")}><option value="unknown">Determine during analysis</option><option value="true">Compatible</option><option value="false">Incompatible</option></select></label>}
+          <label>Lineage depth<select value={depth} onChange={(event) => setDepth(Number(event.target.value))}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} hop(s)</option>)}</select></label>
+        </div>
         <label>Reason<textarea value={reason} onChange={(event) => setReason(event.target.value)} required /></label>
         {errors.length > 0 && <ul className="integration-errors">{errors.map((item) => <li key={item}>{item}</li>)}</ul>}
         <button className="cta wide" disabled={busy || errors.length > 0 || (revisionFingerprint !== null && fingerprint === revisionFingerprint)}>{busy ? "Reading DataHub…" : revision ? "Run revised analysis →" : "Analyze impact →"}</button>
@@ -377,7 +526,22 @@ function AnalysisView({ go, handoff, revision, onClearHandoff, onClearRevision }
     {error && <p className="integration-error">{error}</p>}
     {restoredFromServer && <p className="cache-observability" data-testid="workflow-restore-status">Read-only analysis restored from the server. Judge and approval authority were reset.</p>}
       </form>
-      <aside className="analysis-side">{impact ? <section className="demo-result live-impact" data-testid="analysis-report" data-analysis-run-id={execution?.analysis_run_id ?? ""}><span>{impact.risk_assessment.level} · {impact.risk_assessment.score}/100</span><h3>{impact.blast_radius} assets may be affected</h3><p>{impact.evidence_bundle.items.length} DataHub evidence records support this read-only report.</p><ul>{impact.impacted_assets.slice(0, 4).map((item) => <li key={item.asset_urn}>{item.criticality} · {shortUrn(item.asset_urn)}</li>)}</ul><button className="ghost" onClick={() => go("Review")}>Continue to governed review →</button></section> : <section className="card guide-card"><div className="guide-icon">✦</div><h2>Simple and governed</h2><p>The system evaluates evidence and proposes steps. It never deploys a schema change.</p><div><span>1</span> Describe the change</div><div><span>2</span> Review the impact</div><div><span>3</span> Decide with evidence</div></section>}</aside>
+      <aside className="analysis-side">{impact
+        ? <section className={`demo-result live-impact risk-${impact.risk_assessment.level.toLowerCase()}`} data-testid="analysis-report" data-analysis-run-id={execution?.analysis_run_id ?? ""}>
+          <span className="risk-pill">{impact.risk_assessment.level} · {impact.risk_assessment.score}/100</span>
+          <h3>{impact.blast_radius} assets may be affected</h3>
+          <p>{impact.evidence_bundle.items.length} DataHub evidence records support this read-only report.</p>
+          <ul>{impact.impacted_assets.slice(0, 5).map((item) => <li key={item.asset_urn}><b>{item.criticality}</b> {shortUrn(item.asset_urn)}</li>)}</ul>
+          <button className="ghost wide" onClick={() => go("Review")}>Continue to governed review →</button>
+        </section>
+        : <section className="card guide-card">
+          <div className="guide-icon">✦</div>
+          <h2>Simple and governed</h2>
+          <p>The system evaluates evidence and proposes steps. It never deploys a schema change.</p>
+          <div><span>1</span> Describe the change</div>
+          <div><span>2</span> Review the impact</div>
+          <div><span>3</span> Decide with evidence</div>
+        </section>}</aside>
     </div>
   </section>;
 }
@@ -386,20 +550,80 @@ function FollowUp({ go }: { go: (page: Page) => void }) {
   const [history, setHistory] = useState<RunSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => { request<RunSummary[]>("/api/v1/judges/history").then(setHistory).catch((caught) => setError(caught instanceof Error ? caught.message : "History unavailable")); }, []);
-  return <section className="page-content integration-page"><div className="page-heading"><div><p className="overline">AUDITABLE FOLLOW-UP</p><h1>Analysis follow-up</h1><p>Review persisted independent-judging outcomes. Detailed proposal and audit controls stay in the governed review.</p></div><button className="ghost" onClick={() => go("Review")}>Open current review</button></div><section className="card follow-table"><div className="table-head"><h2>Recent governed reviews</h2><span>{history.length} run(s)</span></div>{error && <p className="integration-error">{error}</p>}{history.length === 0 && !error && <p className="empty-state">No judging run has been recorded yet. Run an impact analysis, then continue to governed review.</p>}{history.map((item) => <div className="table-row" key={item.run_id}><div className="row-symbol">◌</div><div><b>{item.decision ?? "GATE 0"}</b><span>{item.run_id}</span></div><span className={`status ${item.decision === "FINALIZE_READ_ONLY" ? "done" : "pending"}`}>{item.openai_status ?? "—"} / {item.groq_status ?? "—"}</span><button onClick={() => go("Review")}>→</button></div>)}</section></section>;
+  return <section className="page-content integration-page">
+    <div className="page-heading">
+      <div>
+        <p className="overline">AUDITABLE FOLLOW-UP</p>
+        <h1>Analysis follow-up</h1>
+        <p>Review persisted independent-judging outcomes. Detailed proposal and audit controls stay in the governed review.</p>
+      </div>
+      <button className="ghost" onClick={() => go("Review")}>Open current review</button>
+    </div>
+    <section className="card follow-table">
+      <div className="table-head"><h2>Recent governed reviews</h2><span>{history.length} run(s)</span></div>
+      {error && <p className="integration-error">{error}</p>}
+      {history.length === 0 && !error && <p className="empty-state">No judging run has been recorded yet. Run an impact analysis, then continue to governed review.</p>}
+      {history.map((item) => <button className="table-row" key={item.run_id} onClick={() => go("Review")}>
+        <span className="row-symbol">◌</span>
+        <span><b>{item.decision ?? "GATE 0"}</b><code>{item.run_id}</code></span>
+        <span className={`status ${item.decision === "FINALIZE_READ_ONLY" ? "done" : "pending"}`}>{item.openai_status ?? "—"} / {item.groq_status ?? "—"}</span>
+        <span className="row-go">→</span>
+      </button>)}
+    </section>
+  </section>;
 }
 
 function HealthView({ health }: { health: RuntimeHealth | null }) {
   const items = health ? [["API", health.status], ["DataHub", health.datahub], ["Qdrant", health.qdrant], ["LLM providers", health.llm_providers]] : [["API", "checking"], ["DataHub", "checking"], ["Qdrant", "checking"], ["LLM providers", "checking"]];
   const providers = health ? Object.entries(health.providers ?? {}) : [];
-  return <section className="page-content health-screen integration-page"><div className="page-heading"><div><p className="overline">LIVE TECHNICAL STATUS</p><h1>Platform health</h1><p>This screen reads the LineageGuard health endpoint; it never displays provider secrets.</p></div><div className={`assistant-status ${health?.status === "ok" ? "ready" : ""}`}><i /> {health?.status === "ok" ? "Operational" : "Checking"}</div></div><section className="health-hero"><div><span className="health-check">{health?.status === "ok" ? "✓" : "…"}</span><h2>{health?.status === "ok" ? "Core services are available" : "Checking service health"}</h2><p>Health reports configuration readiness. External providers are considered live only after a successful request.</p></div><small>Environment: {health?.environment ?? "unknown"}</small></section><div className="health-grid">{items.map(([name, value]) => <HealthCard key={name} name={name} status={value} />)}</div>{providers.length > 0 && <section className="provider-health" data-testid="provider-readiness"><div className="page-heading compact"><div><p className="overline">OPTIONAL MODEL ROLES</p><h2>Provider configuration</h2><p>Unconfigured actions are disabled. Configured providers still require a successful live request.</p></div></div><div className="provider-row">{providers.map(([name, readiness]) => <article className={`provider-action ${readiness.available ? "available" : "unavailable"}`} key={name}><div><b>{name.replaceAll("_", " ")}</b><span>{readiness.model ?? "Not configured"}</span><small>{readiness.reason}</small></div><strong>{readiness.available ? "CONFIGURED" : "DISABLED"}</strong></article>)}</div></section>}</section>;
+  const operational = health?.status === "ok";
+  return <section className="page-content health-screen integration-page">
+    <div className="page-heading">
+      <div>
+        <p className="overline">LIVE TECHNICAL STATUS</p>
+        <h1>Platform health</h1>
+        <p>This screen reads the LineageGuard health endpoint; it never displays provider secrets.</p>
+      </div>
+      <div className={`assistant-status ${operational ? "ready" : ""}`}><i /> {operational ? "OPERATIONAL" : "CHECKING"}</div>
+    </div>
+    <section className="health-hero">
+      <span className="health-check">{operational ? "✓" : "…"}</span>
+      <div>
+        <h2>{operational ? "Core services are available" : "Checking service health"}</h2>
+        <p>Health reports configuration readiness. External providers are considered live only after a successful request.</p>
+      </div>
+      <small>env: {health?.environment ?? "unknown"}</small>
+    </section>
+    <div className="health-grid">{items.map(([name, value]) => <HealthCard key={name} name={name} status={value} />)}</div>
+    {providers.length > 0 && <section className="provider-health" data-testid="provider-readiness">
+      <div className="page-heading compact">
+        <div>
+          <p className="overline">OPTIONAL MODEL ROLES</p>
+          <h2>Provider configuration</h2>
+          <p>Unconfigured actions are disabled. Configured providers still require a successful live request.</p>
+        </div>
+      </div>
+      <div className="provider-row">{providers.map(([name, readiness]) => <article className={`provider-action ${readiness.available ? "available" : "unavailable"}`} key={name}>
+        <header><b>{name.replaceAll("_", " ")}</b><strong>{readiness.available ? "CONFIGURED" : "DISABLED"}</strong></header>
+        <code>{readiness.model ?? "Not configured"}</code>
+        <small>{readiness.reason}</small>
+      </article>)}</div>
+    </section>}
+    {health && <p className="writeback-bar">Write-back: <b className={health.writeback === "ready" ? "warn" : ""}>{health.writeback}</b> · demo mode: {String(health.demo_mode)} · the only possible mutation is one DataHub Analysis document, behind the reviewer capability and the opt-in flag.</p>}
+  </section>;
 }
 
-function HealthCard({ name, status }: { name: string; status: string }) { const reachable = status === "ok"; const configured = status === "configured"; return <article className="health-card"><i>{reachable || configured ? "✓" : "!"}</i><div><b>{name}</b><span>{reachable ? "Reachable" : configured ? "Configured — validate live reads in Cartography" : "Requires attention or is checking"}</span></div><small><em className={reachable || configured ? "ok" : "warn"} />{status}</small></article>; }
+function HealthCard({ name, status }: { name: string; status: string }) {
+  const reachable = status === "ok";
+  const configured = status === "configured";
+  return <article className="health-card">
+    <span className="health-mark">{reachable || configured ? "✓" : "!"}</span>
+    <b>{name}</b>
+    <span>{reachable ? "Reachable" : configured ? "Configured — validate live reads in Cartography" : "Requires attention or is checking"}</span>
+    <div className={`health-state ${reachable || configured ? "ok" : "warn"}`}>{status}</div>
+  </article>;
+}
 function icon(page: Page) { return ({ Accueil: "⌂", Cartographie: "◌", Assistant: "✦", "Nouvelle analyse": "＋", Suivi: "◷", Santé: "✓", Review: "▣" })[page]; }
 function pageLabel(page: Page) { return ({ Accueil: "Home", Cartographie: "Cartography", Assistant: "Assistant", "Nouvelle analyse": "New analysis", Suivi: "Activity", Santé: "Health", Review: "Governed review" })[page]; }
 function platformName(platform?: string | null) { return (platform ?? "unknown").replace("urn:li:dataPlatform:", ""); }
 function shortUrn(urn: string) { return urn.length > 52 ? `${urn.slice(0, 23)}…${urn.slice(-25)}` : urn; }
-function colorFor(value: string) { const colors = ["#67e8f9", "#c4b5fd", "#86efac", "#fcd34d", "#f9a8d4", "#93c5fd"]; let hash = 0; for (let i = 0; i < value.length; i += 1) hash = (hash * 31 + value.charCodeAt(i)) | 0; return colors[Math.abs(hash) % colors.length]; }
-function nodeTooltip(node: CatalogNode) { return `<div><b>${escapeHtml(node.label)}</b><br/>${escapeHtml(node.entity_type)}<br/>${escapeHtml(platformName(node.platform_urn))}<br/><small>${escapeHtml(node.urn)}</small></div>`; }
-function escapeHtml(value: string) { return value.replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character] ?? character); }
