@@ -165,9 +165,13 @@ export function demoData(): FieldData {
 
 type Edge = { s: number; t: number };
 
-/** Layers nodes by longest upstream path, then relaxes them into a lineage-flow constellation. */
+/**
+ * Places the complete catalogue on a stable spherical "planet".
+ * A layered flow is useful for a small pipeline, but becomes a narrow column
+ * with a complete DataHub catalogue. Real lineage edges still connect the
+ * assets, while the globe stays legible at rest.
+ */
 function layout(data: FieldData): { nodes: FieldNode[]; edges: Edge[]; adjacency: number[][] } {
-  const rnd = mulberry32(7919);
   const index = new Map<string, number>();
   data.nodes.forEach((n, i) => index.set(n.urn, i));
 
@@ -180,75 +184,27 @@ function layout(data: FieldData): { nodes: FieldNode[]; edges: Edge[]; adjacency
   });
 
   const degree = new Array<number>(data.nodes.length).fill(0);
-  const outgoing: number[][] = data.nodes.map(() => []);
-  const incoming = new Array<number>(data.nodes.length).fill(0);
   edges.forEach((e) => {
     degree[e.s] += 1; degree[e.t] += 1;
-    outgoing[e.s].push(e.t); incoming[e.t] += 1;
   });
-
-  // longest-path layering with a cycle-safe visit budget
-  const layer = new Array<number>(data.nodes.length).fill(0);
-  const queue: number[] = [];
-  const remaining = incoming.slice();
-  remaining.forEach((v, i) => { if (v === 0) queue.push(i); });
-  let guard = data.nodes.length * 8;
-  while (queue.length && guard-- > 0) {
-    const i = queue.shift() as number;
-    outgoing[i].forEach((j) => {
-      layer[j] = Math.max(layer[j], Math.min(layer[i] + 1, 6));
-      remaining[j] -= 1;
-      if (remaining[j] <= 0) queue.push(j);
-    });
-  }
-  const maxLayer = Math.max(1, ...layer);
-
+  const count = Math.max(data.nodes.length, 1);
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
   const nodes: FieldNode[] = data.nodes.map((n, i) => {
-    const angle = rnd() * Math.PI * 2;
-    const radius = 11 + Math.sqrt(rnd()) * 42;
-    const centered = layer[i] - maxLayer / 2;
+    const vertical = 1 - (2 * (i + 0.5)) / count;
+    const ring = Math.sqrt(Math.max(0, 1 - vertical * vertical));
+    const angle = goldenAngle * i;
+    const radius = 74 + Math.min(degree[i], 8) * 1.15;
     return {
       ...n,
       index: i,
       platformKey: platformKey(n.platform || n.entityType || "unknown"),
-      layer: layer[i],
+      layer: 0,
       degree: degree[i],
-      x: centered * (108 / Math.max(maxLayer, 1)) + (rnd() - 0.5) * 8,
-      y: Math.sin(angle) * radius * 0.92,
-      z: Math.cos(angle) * radius * 1.05
+      x: Math.cos(angle) * ring * radius,
+      y: vertical * radius,
+      z: Math.sin(angle) * ring * radius
     };
   });
-
-  for (let iteration = 0; iteration < 14; iteration += 1) {
-    for (let i = 0; i < nodes.length; i += 1) {
-      for (let j = i + 1; j < nodes.length; j += 1) {
-        const a = nodes[i];
-        const b = nodes[j];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const dz = b.z - a.z;
-        const d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 < 90 && d2 > 0.0001) {
-          const d = Math.sqrt(d2);
-          const f = ((9.5 - d) / d) * 0.28;
-          a.x -= dx * f * 0.35; a.y -= dy * f; a.z -= dz * f;
-          b.x += dx * f * 0.35; b.y += dy * f; b.z += dz * f;
-        }
-      }
-    }
-    edges.forEach((e) => {
-      const a = nodes[e.s];
-      const b = nodes[e.t];
-      const dy = b.y - a.y;
-      const dz = b.z - a.z;
-      a.y += dy * 0.02; a.z += dz * 0.02;
-      b.y -= dy * 0.02; b.z -= dz * 0.02;
-    });
-    nodes.forEach((n) => {
-      const home = (n.layer - maxLayer / 2) * (108 / Math.max(maxLayer, 1));
-      n.x += (home - n.x) * 0.18;
-    });
-  }
 
   const adjacency: number[][] = nodes.map(() => []);
   edges.forEach((e, i) => { adjacency[e.s].push(i); adjacency[e.t].push(i); });

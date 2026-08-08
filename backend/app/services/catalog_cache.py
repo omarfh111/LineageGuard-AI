@@ -451,7 +451,27 @@ class CatalogCache:
                     nodes.setdefault(node.urn, node)
                 if len(graph.nodes) < count:
                     break
-        return list(nodes.values())
+        # Querying every schema field before datasets can make the first visible
+        # snapshot look disconnected for a long time. DataHub lineage is most
+        # useful on datasets and BI/pipeline entities, so traverse those first.
+        # This changes only refresh order, never the catalogue contents.
+        lineage_priority = {
+            "DATASET": 0,
+            "DATAFLOW": 1,
+            "DATAJOB": 2,
+            "DASHBOARD": 3,
+            "CHART": 4,
+            "CONTAINER": 5,
+            "SCHEMAFIELD": 9,
+        }
+        return sorted(
+            nodes.values(),
+            key=lambda node: (
+                lineage_priority.get(node.entity_type.upper(), 6),
+                node.label.casefold(),
+                node.urn,
+            ),
+        )
 
     async def _load_lineage_graph(
         self, roots: list[CatalogNode], *, publish_progress: bool
@@ -469,26 +489,39 @@ class CatalogCache:
         lineage_fingerprints: dict[str, str] = {}
         for start in range(0, len(roots), 50):
             batch = roots[start : start + 50]
-            lineage_many = getattr(client, "get_lineage_many", None)
-            if callable(lineage_many):
-                try:
-                    results = await lineage_many(
-                        [(root.urn, "DOWNSTREAM", 1, 100) for root in batch]
-                    )
-                    projections = [
-                        catalog_from_lineage(result, root.urn, "DOWNSTREAM", 1)
-                        for root, result in zip(batch, results, strict=True)
-                    ]
-                except (DataHubConfigurationError, OSError, TimeoutError):
-                    projections = [None] * len(batch)
-            else:
+
+            async def fetch_individually() -> list[CatalogGraph | None]:
+                """Recover a partial MCP batch without discarding good lineage."""
+
                 semaphore = asyncio.Semaphore(self._settings.catalog_lineage_concurrency)
 
                 async def limited_fetch(root: CatalogNode) -> CatalogGraph | None:
                     async with semaphore:
                         return await fetch(root)
 
-                projections = await asyncio.gather(*(limited_fetch(root) for root in batch))
+                return await asyncio.gather(*(limited_fetch(root) for root in batch))
+
+            lineage_many = getattr(client, "get_lineage_many", None)
+            if callable(lineage_many):
+                try:
+                    results = await lineage_many(
+                        [(root.urn, "DOWNSTREAM", 1, 100) for root in batch]
+                    )
+                    if len(results) != len(batch):
+                        raise DataHubConfigurationError(
+                            "DataHub returned fewer lineage responses than requested"
+                        )
+                    projections = [
+                        catalog_from_lineage(result, root.urn, "DOWNSTREAM", 1)
+                        for root, result in zip(batch, results, strict=True)
+                    ]
+                except (DataHubConfigurationError, OSError, TimeoutError):
+                    # Some DataHub entities have no valid batch lineage response.
+                    # Retry only this batch one asset at a time: successful roots
+                    # still contribute their real relationships to the 3D cache.
+                    projections = await fetch_individually()
+            else:
+                projections = await fetch_individually()
             if any(projection is None for projection in projections):
                 raise DataHubConfigurationError(
                     f"Lineage refresh returned an incomplete batch at offset {start}"

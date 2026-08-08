@@ -90,6 +90,13 @@ class RecoveringCacheClient(CacheClient):
         return await super().search(query, num_results, offset)
 
 
+class PartialBatchCacheClient(CacheClient):
+    async def get_lineage_many(self, requests: list[tuple[str, str, int, int]]) -> list[dict]:
+        """Simulate an MCP batch truncated by a provider response budget."""
+
+        return []
+
+
 @pytest.mark.asyncio
 async def test_server_catalog_cache_loads_once_and_attaches_local_actions() -> None:
     settings = Settings(
@@ -107,6 +114,21 @@ async def test_server_catalog_cache_loads_once_and_attaches_local_actions() -> N
     assert snapshot.graph.edges[0].target_urn == TARGET
     source = next(node for node in snapshot.graph.nodes if node.urn == SOURCE)
     assert source.recent_actions[0].action == "IMPACT_ANALYSIS_COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_incomplete_mcp_batch_retries_roots_individually() -> None:
+    settings = Settings(
+        app_env="test", database_url="sqlite:///:memory:", datahub_gms_url="http://localhost:8080",
+        datahub_gms_token=None, catalog_autoload=False, catalog_max_assets=20, catalog_max_edges=20,
+    )
+    cache = CatalogCache(settings, client_factory=PartialBatchCacheClient)  # type: ignore[arg-type]
+
+    await cache._refresh("partial_batch")
+    snapshot = await cache.snapshot()
+
+    assert snapshot.status.state == "READY"
+    assert snapshot.graph.edges[0].target_urn == TARGET
 
 
 @pytest.mark.asyncio

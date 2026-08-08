@@ -46,6 +46,7 @@ type CatalogEdge = { source_urn: string; target_urn: string; direction: string; 
 type CatalogCache = { status: { state: string; loaded_assets: number; loaded_edges: number; message: string; last_updated_at?: string | null; last_checked_at?: string | null; refresh_reason?: string | null; refresh_in_progress: boolean; consecutive_failures: number; last_error?: string | null; detected_change?: string | null; generation: number }; graph: { nodes: CatalogNode[]; edges: CatalogEdge[]; truncated: boolean } };
 type RagStatus = { state: string; indexed_assets: number; total_assets: number; message: string; query_available: boolean };
 type ChatReply = { answer: string; verification_note: string; citations: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null; source: string }>; target_resolution?: { status: "NOT_REQUIRED" | "RESOLVED" | "AMBIGUOUS" | "NOT_FOUND"; detail: string; targets: Array<{ urn: string; label: string; entity_type: string; platform_urn?: string | null }> } | null; verification?: { passed: boolean; factual_claim_count: number; supported_claim_count: number; claim_coverage: number } | null; action_proposal: { action: "NONE" | "ANALYZE_IMPACT" | "HITL_WRITEBACK"; reason: string }; analysis_handoff_id?: string | null; analysis_handoff_expires_at?: string | null; evidence?: Array<{ id: string; kind: string; asset_urn: string; summary: string; facts: string[] }>; agent_trace: Array<{ id: string; label: string; status: string; detail: string }> };
+type ChatTurn = { id: string; question: string; reply: ChatReply };
 type WorkflowExecution = { analysis_run_id: string; impact_report: { request: ChangeRequestPayload; blast_radius: number; confidence: number; risk_assessment: { level: string; score: number }; impacted_assets: Array<{ asset_urn: string; criticality: string }>; evidence_bundle: { items: unknown[] } }; remediation_plan: { migration_steps: Array<{ order: number; action: string; rationale: string }> } };
 type RunSummary = { run_id: string; decision: string | null; openai_status: string | null; groq_status: string | null };
 
@@ -300,11 +301,12 @@ function schemaFieldParentDatasetUrn(urn: string): string | null {
 function AssistantView({ go, onAnalysisHandoff }: { go: (page: Page) => void; onAnalysisHandoff: (handoff: ChatAnalysisHandoff) => void }) {
   const [status, setStatus] = useState<RagStatus | null>(null);
   const [message, setMessage] = useState("");
-  const [reply, setReply] = useState<ChatReply | null>(null);
+  const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [memoryEnabled, setMemoryEnabled] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const sessionId = useMemo(chatSessionId, []);
+  const chatViewport = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const load = () => request<RagStatus>("/api/v1/chat/index/status").then(setStatus).catch((caught) => setError(caught instanceof Error ? caught.message : "Index status unavailable"));
@@ -314,18 +316,23 @@ function AssistantView({ go, onAnalysisHandoff }: { go: (page: Page) => void; on
   }, [status?.state]);
 
   const ready = status?.query_available === true || status?.state === "COMPLETED";
+  useEffect(() => {
+    const viewport = chatViewport.current;
+    if (!viewport) return;
+    window.requestAnimationFrame(() => viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" }));
+  }, [turns.length, busy]);
   async function index() { setBusy("index"); setError(null); try { setStatus(await request<RagStatus>("/api/v1/chat/index/ingest", {})); } catch (caught) { setError(caught instanceof Error ? caught.message : "Indexing unavailable"); } finally { setBusy(null); } }
-  async function ask(event: FormEvent) { event.preventDefault(); if (!message.trim()) return; setBusy("query"); setError(null); try { setReply(await request<ChatReply>("/api/v1/chat/query", { message: message.trim(), session_id: sessionId, memory_enabled: memoryEnabled })); } catch (caught) { setError(caught instanceof Error ? caught.message : "Question unavailable"); } finally { setBusy(null); } }
-  const outcome = reply?.action_proposal.action !== "NONE" ? "ACTION REQUIRED" : reply?.verification?.passed ? "VERIFIED" : reply ? "LIMITED" : null;
-  const handoff = reply ? createChatHandoff({
-    action: reply.action_proposal.action,
-    resolution: reply.target_resolution,
-    handoffId: reply.analysis_handoff_id,
-    expiresAt: reply.analysis_handoff_expires_at,
-  }) : null;
-
-  const verification = reply?.verification;
-  const resolved = reply?.target_resolution;
+  async function ask(event: FormEvent) {
+    event.preventDefault();
+    const question = message.trim();
+    if (!question) return;
+    setBusy("query"); setError(null);
+    try {
+      const reply = await request<ChatReply>("/api/v1/chat/query", { message: question, session_id: sessionId, memory_enabled: memoryEnabled });
+      setTurns((current) => [...current, { id: crypto.randomUUID(), question, reply }].slice(-6));
+      setMessage("");
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Question unavailable"); } finally { setBusy(null); }
+  }
   return <section className="page-content assistant-screen integration-page">
     <div className="page-heading">
       <div>
@@ -336,7 +343,7 @@ function AssistantView({ go, onAnalysisHandoff }: { go: (page: Page) => void; on
       <div className={`assistant-status ${ready ? "ready" : ""}`}><i /> {ready ? (status?.state === "RUNNING" ? "CHAT READY · INDEXING" : "INDEX READY") : status?.state ?? "INDEX UNAVAILABLE"}</div>
     </div>
     <div className="assistant-board live-assistant">
-      <div className="assistant-intro">
+      <div className="assistant-intro assistant-intro-compact">
         <div className="assistant-mark">✦</div>
         <h2>What do you want to understand?</h2>
         <p>{status?.message ?? "Start controlled metadata indexing to enable the assistant."}</p>
@@ -345,36 +352,71 @@ function AssistantView({ go, onAnalysisHandoff }: { go: (page: Page) => void; on
           <button onClick={() => setMessage("Show the downstream lineage of the orders dataset.")}>Show downstream lineage</button>
           <button onClick={() => setMessage("What is the schema of the Snowflake orders dataset?")}>Inspect a schema</button>
         </div>
-        <form className="message-box live-message" onSubmit={ask}>
-          <span>✦</span>
-          <input value={message} onChange={(event) => setMessage(event.target.value)} disabled={!ready || busy !== null} placeholder={ready ? "Ask a question about DataHub…" : "Index metadata first"} />
-          <button disabled={!ready || busy !== null}>{busy === "query" ? "…" : "↑"}</button>
-        </form>
-        <div className="assistant-controls">
-          <button className="ghost" onClick={index} disabled={busy !== null || status?.state === "RUNNING"}>{status?.state === "RUNNING" ? "Indexing…" : "Index DataHub metadata"}</button>
-          <label><input type="checkbox" checked={memoryEnabled} onChange={(event) => setMemoryEnabled(event.target.checked)} /> Conversation memory</label>
-        </div>
       </div>
-      {error && <p className="integration-error">{error}</p>}
-      {reply && <article className={`live-answer ${verification?.passed ? "verified" : ""}`}>
+      <section className="chat-shell" aria-label="DataHub conversation">
+        <div className="chat-viewport" ref={chatViewport}>
+          {error && <p className="integration-error">{error}</p>}
+          {turns.length === 0 && <div className="chat-empty"><b>Start with a question</b><span>Choose an example above or ask about a table, dashboard, owner, schema, or lineage.</span></div>}
+          {turns.length > 0 && <section className="conversation-history" aria-live="polite">{turns.map((turn) => <div className="conversation-turn" key={turn.id}>
+            <div className="user-message"><span>You</span><p>{turn.question}</p></div>
+            <AssistantResponse reply={turn.reply} go={go} onAnalysisHandoff={onAnalysisHandoff} onChooseTarget={(target) => setMessage(`Tell me about the ${displayPlatform(target)} ${target.label} dataset.`)} />
+          </div>)}</section>}
+        </div>
+        <div className="chat-composer">
+          <form className="message-box live-message" onSubmit={ask}>
+            <span>✦</span>
+            <input value={message} onChange={(event) => setMessage(event.target.value)} disabled={!ready || busy !== null} placeholder={ready ? "Ask a question about DataHub…" : "Index metadata first"} />
+            <button disabled={!ready || busy !== null}>{busy === "query" ? "…" : "↑"}</button>
+          </form>
+          <div className="assistant-controls">
+            <button className="ghost" onClick={index} disabled={busy !== null || status?.state === "RUNNING"}>{status?.state === "RUNNING" ? "Indexing…" : "Index DataHub metadata"}</button>
+            <label><input type="checkbox" checked={memoryEnabled} onChange={(event) => setMemoryEnabled(event.target.checked)} /> Conversation memory</label>
+          </div>
+        </div>
+      </section>
+    </div>
+  </section>;
+}
+
+function AssistantResponse({ reply, go, onAnalysisHandoff, onChooseTarget }: {
+  reply: ChatReply;
+  go: (page: Page) => void;
+  onAnalysisHandoff: (handoff: ChatAnalysisHandoff) => void;
+  onChooseTarget: (target: NonNullable<ChatReply["target_resolution"]>["targets"][number]) => void;
+}) {
+  const verification = reply.verification;
+  const resolved = reply.target_resolution;
+  const outcome = reply.action_proposal.action !== "NONE" ? "ACTION REQUIRED" : verification?.passed ? "VERIFIED" : "LIMITED";
+  const handoff = createChatHandoff({
+    action: reply.action_proposal.action,
+    resolution: reply.target_resolution,
+    handoffId: reply.analysis_handoff_id,
+    expiresAt: reply.analysis_handoff_expires_at,
+  });
+  return <article className={`live-answer ${verification?.passed ? "verified" : ""}`}>
         <div className="answer-status">
           <b>{outcome}</b>
           {verification && <span>{verification.factual_claim_count} claims · {verification.supported_claim_count} supported · {Math.round(verification.claim_coverage * 100)}% coverage</span>}
         </div>
         <p>{reply.answer}</p>
         {resolved && resolved.status !== "NOT_REQUIRED" && <div className="target-resolution">
-          <p className="overline">TARGET RESOLUTION · {resolved.status === "RESOLVED" ? "LOCKED" : resolved.status}</p>
-          {resolved.targets.map((target) => <code key={target.urn}>{target.urn}</code>)}
-          <p>{resolved.detail}</p>
+          <p className="overline">DATAHUB TARGET · {resolved.status === "RESOLVED" ? "CONFIRMED" : "YOUR CHOICE IS NEEDED"}</p>
+          <p>{resolved.status === "AMBIGUOUS" ? "We found several matching data assets. Choose the source you mean before we inspect its schema or lineage." : "This is the exact DataHub asset used to verify the answer."}</p>
+          <div className="target-choice-list">
+            {resolved.targets.map((target) => <button type="button" key={target.urn} onClick={() => onChooseTarget(target)}>
+              <b>{target.label}</b><span>{displayPlatform(target)} · {target.entity_type.toLowerCase()}</span>
+            </button>)}
+          </div>
+          <details className="target-technical"><summary>Technical identifier</summary>{resolved.targets.map((target) => <code key={target.urn}>{target.urn}</code>)}</details>
         </div>}
         {(reply.evidence ?? []).length > 0 && <div className="evidence-grid">
           {(reply.evidence ?? []).map((item) => <div key={item.id}>
             <span>{item.id} · {evidenceTool(item.kind)}</span>
-            <p>{item.facts.slice(0, 3).join(" · ") || item.summary}</p>
+            <p>{friendlyEvidenceSummary(item)}</p>
           </div>)}
         </div>}
         <div className="evidence-tags">{reply.citations.map((citation) => <code key={`${citation.source}-${citation.urn}`}>{citation.label} · {citation.source === "datahub_mcp_live" ? "MCP verified" : "RAG context"}</code>)}</div>
-        <details><summary>Public agent trace</summary><ul>{reply.agent_trace.map((step) => <li key={`${step.id}-${step.detail}`}>{step.id} · {step.status} · {step.detail}</li>)}</ul></details>
+        <details><summary>How this answer was checked</summary><ul>{reply.agent_trace.map((step) => <li key={`${step.id}-${step.detail}`}>{step.label} · {step.status} · {step.detail}</li>)}</ul></details>
         {reply.action_proposal.action !== "NONE" && <div className="action-callout">
           <b>{reply.action_proposal.action}</b>
           <p>{reply.action_proposal.reason}</p>
@@ -382,13 +424,27 @@ function AssistantView({ go, onAnalysisHandoff }: { go: (page: Page) => void; on
           {reply.action_proposal.action === "HITL_WRITEBACK" && <button className="ghost" onClick={() => go("Review")}>Open governed review →</button>}
         </div>}
         <span className="verification-note">{reply.verification_note}</span>
-      </article>}
-    </div>
-  </section>;
+      </article>;
 }
 
 function evidenceTool(kind: string) {
   return kind === "schema" ? "list_schema_fields" : kind === "lineage" ? "get_lineage" : "search";
+}
+
+function displayPlatform(target: { urn: string; platform_urn?: string | null }) {
+  const raw = target.platform_urn?.split(":").at(-1) ?? target.urn.match(/dataPlatform:([^,\)]+)/)?.[1] ?? "DataHub";
+  return raw.replaceAll("_", " ");
+}
+
+function friendlyEvidenceSummary(item: NonNullable<ChatReply["evidence"]>[number]) {
+  if (item.kind === "schema") {
+    const fields = item.facts.filter((fact) => fact.startsWith("column=")).slice(0, 3).map((fact) => fact.replace(/^column=/, "").replace(", type=", " · "));
+    return fields.length ? `Fields checked: ${fields.join(" · ")}.` : "The schema was checked directly in DataHub.";
+  }
+  if (item.kind === "lineage") return item.summary || "The connected downstream assets were read directly from DataHub.";
+  const asset = item.facts.find((fact) => fact.startsWith("asset="))?.replace("asset=", "") ?? "Matching data asset";
+  const platform = item.facts.find((fact) => fact.startsWith("platform="))?.replace("platform=", "");
+  return `${asset}${platform ? ` · ${platform}` : ""} was confirmed in DataHub.`;
 }
 
 function AnalysisView({ go, handoff, catalogTarget, revision, onClearHandoff, onClearCatalogTarget, onClearRevision }: {
@@ -582,12 +638,11 @@ function AnalysisView({ go, handoff, catalogTarget, revision, onClearHandoff, on
         <label>Reason<textarea value={reason} onChange={(event) => setReason(event.target.value)} required /></label>
         {errors.length > 0 && <ul className="integration-errors">{errors.map((item) => <li key={item}>{item}</li>)}</ul>}
         <button className="cta wide" disabled={busy || errors.length > 0 || (revisionFingerprint !== null && fingerprint === revisionFingerprint)}>{busy ? "Reading DataHub…" : revision ? "Run revised analysis →" : "Analyze impact →"}</button>
-        {busy && <section className="analysis-progress" role="status" aria-live="polite"><div><b>Building the read-only impact report</b><span>{analysisProgress < 35 ? "Resolving the selected DataHub asset" : analysisProgress < 70 ? "Reading lineage and impact evidence" : "Calculating risk and remediation"}</span></div><div className="analysis-progress-track"><i style={{ width: `${analysisProgress}%` }} /></div><small>{analysisProgress}% · The analysis never modifies DataHub.</small></section>}
         {revisionFingerprint !== null && fingerprint === revisionFingerprint && <p className="integration-error">A revision must change at least one request field.</p>}
     {error && <p className="integration-error">{error}</p>}
     {restoredFromServer && <p className="cache-observability" data-testid="workflow-restore-status">Read-only analysis restored from the server. Judge and approval authority were reset.</p>}
       </form>
-      <aside className="analysis-side">{impact
+      <aside className="analysis-side">{busy && <section className="analysis-progress" role="status" aria-live="polite"><div><b>Checking what this change could affect</b><span>{analysisProgress < 35 ? "Finding the selected data item" : analysisProgress < 70 ? "Following connected tables and reports" : "Preparing a safe recommendation"}</span></div><div className="analysis-progress-track"><i style={{ width: `${analysisProgress}%` }} /></div><small>{analysisProgress}% · This check never modifies DataHub.</small></section>}{impact
         ? <section className={`demo-result live-impact risk-${impact.risk_assessment.level.toLowerCase()}`} data-testid="analysis-report" data-analysis-run-id={execution?.analysis_run_id ?? ""}>
           <span className="risk-pill">{impact.risk_assessment.level} · {impact.risk_assessment.score}/100</span>
           <h3>{impact.blast_radius} assets may be affected</h3>
