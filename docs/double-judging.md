@@ -64,6 +64,23 @@ The Groq fallback does **not** convert an unavailable judge into a PASS. Timeout
 Provider diagnostics log only exception type, HTTP status, and provider error
 code. Prompts, metadata, response bodies, and credentials are never logged.
 
+## Deliberate disagreement scenarios
+
+Judges are not expected to approve every analysis. The local 2026-08-08
+validation exercised three replayable cases against the same DataHub catalog:
+
+| Change request | OpenAI | Groq | Expected operator outcome |
+|---|---|---|---|
+| Nullable `ADD_COLUMN lineageguard_judge_positive` | PASS | PASS | `FINALIZE_READ_ONLY`; a human may still decline write-back |
+| `DROP_COLUMN order_id` with HIGH-criticality descendants | PASS | FAIL | `NEEDS_REPAIR`; Groq requires consumer-migration evidence before approving removal of an identifier |
+| `CHANGE_COLUMN_TYPE order_id → BOOLEAN`, compatibility `Incompatible` | FAIL | FAIL | `NEEDS_REPAIR`; downstream remediation is missing |
+
+The technical/safety role adds a deterministic safety guard for the
+high-criticality identifier-removal case. This does not replace the provider's
+verdict; it prevents an otherwise well-grounded report from being presented as
+technically safe without consumer migration evidence. Each rejection exposes a
+concise public reason and repair recommendation, not hidden reasoning.
+
 ## Live acceptance proof
 
 The hardened path was exercised against the local DataHub catalog with a

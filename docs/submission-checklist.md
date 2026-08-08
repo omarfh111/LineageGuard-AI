@@ -14,7 +14,7 @@ It complements the technical runbook; it does not replace the official
 | Apache 2.0 license | Root [`LICENSE`](../LICENSE) file | Confirm GitHub detects the license and shows it in the repository header/About area |
 | Written project description | Root [`README`](../README.md) and the description template below | Paste a concise, accurate version into Devpost |
 | Public demonstration video under three minutes | Storyboard below | Record the real application, upload publicly to YouTube or Vimeo, and add the URL |
-| Easy testing access | [`runbook.md`](runbook.md), `.env.example`, Docker Compose, health route, and demo preflight | Provide a hosted URL or explicitly tell judges to use the repository setup; include any required credentials privately in Devpost testing instructions |
+| Easy testing access | Public [hosted demo](https://lineageguard.hackdev.tech), [`judge-testing.md`](judge-testing.md), [`runbook.md`](runbook.md), health route, and Docker Compose | Keep the hosted URL available through judging; do **not** publish the reviewer capability |
 | Optional sample outputs | Versioned [`evals/evidence`](../evals/evidence/) and reports; impact/remediation examples | Add one sanitized screenshot or exported report only after verifying it contains no secret or sensitive metadata |
 
 The official submission deadline shown by Devpost is **August 10, 2026 at
@@ -84,6 +84,9 @@ Use these values only if they still match the final revision:
 - **DataHub technologies:** DataHub OSS / Core Platform and DataHub MCP Server
 - **License:** Apache 2.0
 - **Repository:** `https://github.com/omarfh111/LineageGuard-AI`
+- **Public demo:** `https://lineageguard.hackdev.tech`
+- **Judge test path:** [`docs/judge-testing.md`](judge-testing.md); all catalog, assistant, analysis, review, activity, and health checks are credential-free
+- **Reviewer capability:** intentionally excluded from Devpost, GitHub, screenshots, video, and public documentation; the document-only write proof is available in [`live-writeback-proof.md`](live-writeback-proof.md)
 - **Primary data:** DataHub `showcase-ecommerce` datapack metadata; no warehouse rows are copied into Qdrant
 - **Mutation boundary:** one approved DataHub Analysis document; no schema, lineage, dataset, warehouse, dbt, or dashboard mutation
 - **Open-source contribution bonus:** do not select or claim unless a real external contribution URL exists
@@ -96,5 +99,6 @@ Use these values only if they still match the final revision:
 3. Confirm the README badges, diagrams, and all relative links render on GitHub.
 4. Test the setup from a clean clone or provide a hosted build.
 5. Open repository, video, and demo links in a signed-out browser.
-6. Keep the app and testing access available through the judging period.
-7. Submit before the displayed Devpost deadline and retain the confirmation.
+6. Confirm the public judge workflow in [`judge-testing.md`](judge-testing.md) works without credentials; never disclose the reviewer capability.
+7. Keep the app and testing access available through the judging period.
+8. Submit before the displayed Devpost deadline and retain the confirmation.

@@ -7,6 +7,7 @@ Start with the repository [README](../README.md) for a concise overview and quic
 | [Architecture](architecture.md) | Current | Components, trust boundaries, diagrams, cache lifecycle, and agent invariants |
 | [Runbook](runbook.md) | Current | Local installation, configuration, demo, tracing, and operating commands |
 | [Submission checklist](submission-checklist.md) | Current | Devpost requirements, release gate, public-access checks, description, and under-three-minute video storyboard |
+| [Judge testing guide](judge-testing.md) | Current | Credential-free public-demo checks, expected outcomes, and governed write-back boundary |
 | [Problem and resolution log](problem-resolution-log.md) | Current | Symptoms, root causes, implemented fixes, validation, and residual risk |
 | [Five-minute live demo](five-minute-demo.md) | Current | Longer operator/judge walkthrough and safe provider fallbacks |
 | [API reference](api-reference.md) | Current | Current API routes and safe request flows |
@@ -22,6 +23,8 @@ Start with the repository [README](../README.md) for a concise overview and quic
 | [Phase 0 bootstrap](phase-0-bootstrap.md) | Historical | Original bootstrap scope and deferrals |
 
 The dated reports under [`../evals/reports/`](../evals/reports/) are historical evidence. They must not be silently rewritten as current live-performance claims; record any new benchmark as a new dated report with its dataset, model, environment, and reviewer ground truth.
+
+The latest implementation smoke record is [local governed validation — 2026-08-08](../evals/reports/local-governed-validation-2026-08-08.md). It documents browser-level target locking, cache behavior, the three judge outcome classes, and the local document-only HITL compensation path; it does not replace the reviewed quality benchmark.
 
 ## Evidence labels
 

@@ -24,6 +24,7 @@ The application never changes a warehouse schema, dbt model, lineage edge, dashb
 | Hackathon | [Build with DataHub: The Agent Hackathon](https://datahub.devpost.com/) |
 | Track | **Agents That Do Real Work** |
 | DataHub technology | DataHub OSS/Core plus the official DataHub MCP Server |
+| Public demo | [lineageguard.hackdev.tech](https://lineageguard.hackdev.tech) |
 | Real work | Reads schema and multi-hop lineage, creates a deterministic impact/remediation dossier, obtains independent review, and can publish one governed Analysis document back to DataHub |
 | Safe default | Read-only; model providers are optional; every DataHub mutation gate fails closed |
 | Reproducibility | Docker Compose, checked-in configuration template, CI, deterministic tests, browser E2E, versioned evaluation evidence, and an operator runbook |
@@ -34,6 +35,34 @@ written description, and a public YouTube/Vimeo demonstration **under three
 minutes**. The repository-side assets are organized in the
 [submission checklist](docs/submission-checklist.md); hosting, the final video
 URL, screenshots, and the Devpost form remain owner actions.
+
+### Judge access
+
+The public demo exposes cartography, verified Agentic RAG, read-only impact
+analysis, independent review, activity, and health without credentials. The
+only write path is deliberately protected: it can create one scoped DataHub
+Analysis document only after double PASS and explicit human approval. The
+reviewer capability is never published. See the step-by-step
+[judge testing guide](docs/judge-testing.md) and the sanitized
+[live write-back proof](docs/live-writeback-proof.md).
+
+## Submission media
+
+The following sanitized local captures are ready for the Devpost image gallery.
+They contain no credentials, reviewer capability, or raw provider request. The
+complete 15-item order, captions, and file-size checks are in the
+[media manifest](submission/media/README.md).
+
+| Capture | What it demonstrates |
+|---|---|
+| [3D catalog ready](submission/media/01-catalog-3d-ready.jpg) | A shared server-side catalog cache, live asset/relationship counts, and platform-colored lineage topology |
+| [Verified Agentic RAG answer](submission/media/02-agentic-rag-verified.jpg) | Qdrant-assisted retrieval, an exact Snowflake target, live MCP schema facts, citations, and 16/16 claim support |
+| [Independent judge states](submission/media/03-independent-judge-states.jpg) | Recorded PASS/PASS, PASS/FAIL, and FAIL/FAIL governed-review outcomes |
+| [Read-only impact analysis](submission/media/04-impact-analysis-read-only.jpg) | Typed `DROP_COLUMN` analysis with evidence, blast radius, and no mutation |
+| [Judge disagreement](submission/media/05-independent-judge-disagreement.jpg) | A factual PASS paired with a technical/safety FAIL and its human-readable reason |
+
+The dated [local governed validation](evals/reports/local-governed-validation-2026-08-08.md)
+describes the browser and automated checks represented by these captures.
 
 ### Why it is more than metadata chat
 
@@ -280,6 +309,9 @@ The API starts loading the catalog when the **backend process starts**, before a
 - Every MCP session has a hard deadline. A separate refresh watchdog cancels
   stuck traversal, preserves the last good graph, reports the failure, and
   retries without restarting the backend.
+- A periodic change-check timeout is a non-blocking degradation: it retains the
+  last healthy `READY` graph, schedules exponential backoff, and does not show
+  a fatal error banner to the operator.
 - `READY` means the catalog is usable. The status message tells you when relationship enrichment is still in progress.
 - Filtering and text search are client-side filters over the complete loaded graph. Selecting `All` restores every cached node.
 - “Load 50 more assets” appears only when more discovered assets remain outside the current client slice. A fully loaded catalog within `CATALOG_MAX_ASSETS` correctly has no extra button. Catalog counts vary with the DataHub/datapack version; the dated 2026-08-01 evidence observed 1,191 live root assets.
@@ -295,6 +327,12 @@ Re-indexing is non-blocking when a usable Qdrant collection already exists: the 
 
 Qdrant materially guides live confirmation without becoming a source of truth. For an unresolved target, the tool manager takes at most `RAG_MCP_CONFIRMATION_CANDIDATES` sufficiently strong vector candidates, searches their labels through live DataHub MCP, and accepts a candidate only when the exact same URN is returned. For schema questions, a schema-field hit may nominate the parent dataset URN explicitly embedded in that field URN; duplicate parent nominations collapse to one live lookup. Weak, stale, identifier-mismatched, ambiguous, or retry-time substitutions are discarded. If primary live search already proves one exact target, no extra vector-guided MCP call is made. A single semantic preference requires the configured score margin; otherwise the UI asks the user to disambiguate.
 
+When the user chooses a card from an ambiguous result, the frontend sends the
+selected `selected_asset_urn` alongside the **original** question. The backend
+locks that exact dataset target and performs new live schema/lineage reads only
+for it. A retry cannot silently reinterpret the query or replace it with a
+similarly named Qdrant candidate.
+
 ### Impact, review, and HITL
 
 1. Submit a change request in the impact panel.
@@ -305,6 +343,12 @@ Qdrant materially guides live confirmation without becoming a source of truth. F
    missing-metadata facts, every risk component, score, level, and confidence
    before either provider is called.
 5. Only after a double PASS, prepare a proposal. Keep write-back disabled for normal demonstrations.
+
+The final approval and compensation prompts are integrated into the page rather
+than browser-native dialogs, so the reviewer sees the exact action boundary
+before confirming it. After `save_document`, LineageGuard re-reads the
+governed target through MCP and requires the returned related-document evidence
+to contain the exact document URN and title before it records `COMPLETED`.
 
 The active frontend entry point uses one six-entry navigation and a contextual
 **Governed review** continuation after analysis. It does not mount a second
@@ -500,6 +544,13 @@ chat-routed schema changes. See the
 
 The older six-scenario showcase benchmark records `Precision@6=0.667`; it is
 retained as historical evidence and is not presented as the current result.
+
+The [2026-08-08 local governed validation](evals/reports/local-governed-validation-2026-08-08.md)
+adds a post-fix functional smoke record: 99 targeted backend tests and 23
+frontend tests passed; live local browser checks covered explicit target
+selection, cache readiness, all three independent-judge outcome classes, and
+`COMPLETED → ROLLED_BACK` document-only HITL. It intentionally reports no new
+benchmark ranking, cost, or latency claim.
 
 For the full acceptance protocol, use [the acceptance test plan](docs/acceptance-test-plan.md). The opt-in mutation procedure and its safety constraints are documented in [the live write-back proof](docs/live-writeback-proof.md).
 

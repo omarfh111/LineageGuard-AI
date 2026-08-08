@@ -50,6 +50,13 @@ candidate through MCP and requires the exact proposal title and related asset.
 This prevents an unrelated DataHub document from being adopted or later
 superseded.
 
+For a newly created document, the same rule applies before the first success is
+recorded: the service re-reads the **governed target asset** through MCP and
+requires its related-document result to contain the exact document URN and
+proposal title. A document URN is not treated as a related-document host. If
+this confirmation is unavailable, the outcome is `WRITEBACK_UNCERTAIN` rather
+than a false `COMPLETED`.
+
 Compensation never deletes a document. It writes superseded content to the
 exact URN persisted by the completed proposal. A retry from
 `ROLLBACK_UNCERTAIN` is idempotent in business effect because it is restricted
@@ -96,6 +103,15 @@ mutation is attempted.
 `WRITEBACK_STALE_SECONDS` defaults to `300` and has a minimum of 30 seconds.
 It controls only when abandoned local in-flight work becomes uncertain. It
 never authorizes an external retry.
+
+## Reviewer interface
+
+Approval, compensation, and reconciliation use in-page confirmation panels;
+they do not use browser-native `confirm()` or `prompt()` dialogs. The panel
+states whether the next action writes the single Analysis document, supersedes
+the document created by the same run, or reconciles an uncertain result. This
+makes the audited human decision visible and supports repeatable browser E2E
+testing without weakening the server-side reviewer-capability or CAS gates.
 
 ## Operational limits
 
